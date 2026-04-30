@@ -1,14 +1,19 @@
 use crate::database::{ClipboardItem, Database};
+use crate::exclusions;
 use crate::keyboard;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use crate::settings::SettingsManager;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use crate::window::HotkeyModeState;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use uuid::Uuid;
 
+#[cfg(target_os = "macos")]
+const YOINK_BUNDLE_ID: &str = "com.yoink.app";
+
+/// Cached state of the last seen clipboard so the poll loop can dedup.
 pub struct ClipboardMonitor {
     last_hash: Mutex<Option<String>>,
 }
@@ -25,107 +30,203 @@ impl ClipboardMonitor {
             *self.last_hash.lock().unwrap() = hash;
         }
     }
+
+    pub fn set_last_hash(&self, hash: Option<String>) {
+        *self.last_hash.lock().unwrap() = hash;
+    }
 }
 
-// Called from frontend via polling
-#[tauri::command]
-pub async fn check_clipboard<R: Runtime>(
-    app: AppHandle<R>,
-    db: tauri::State<'_, Database>,
-    monitor: tauri::State<'_, ClipboardMonitor>,
-) -> Result<Option<ClipboardItem>, String> {
-    let clipboard = app.clipboard();
+/// Pasteboard read result.
+#[derive(Debug, Clone)]
+pub enum PasteContent {
+    Text(String),
+    Url(String),
+    Files(Vec<String>),
+    Image { hash: String, data: Vec<u8> },
+}
 
-    // Try to read text content
-    if let Ok(text) = clipboard.read_text() {
-        if !text.is_empty() {
-            let hash = compute_hash(&text);
-
-            // Skip if same as last item
-            {
-                let last_hash = monitor.last_hash.lock().unwrap();
-                if last_hash.as_ref() == Some(&hash) {
-                    return Ok(None);
-                }
-            }
-
-            // Create clipboard item
-            let preview = create_text_preview(&text);
-            let item = ClipboardItem {
-                id: Uuid::new_v4().to_string(),
-                content_type: detect_content_type(&text),
-                content: text,
-                preview,
-                hash: hash.clone(),
-                is_pinned: false,
-                collection_id: None,
-                created_at: Utc::now(),
-                expires_at: None,
-            };
-
-            // Store in database
-            db.insert_item(&item).map_err(|e| e.to_string())?;
-            db.enforce_limit(100).map_err(|e| e.to_string())?;
-
-            *monitor.last_hash.lock().unwrap() = Some(hash);
-
-            // Emit event to frontend
-            let _ = app.emit("clipboard-changed", &item);
-
-            return Ok(Some(item));
+impl PasteContent {
+    fn type_tag(&self) -> &'static str {
+        match self {
+            PasteContent::Text(s) => detect_text_type(s),
+            PasteContent::Url(_) => "url",
+            PasteContent::Files(_) => "file",
+            PasteContent::Image { .. } => "image",
         }
     }
 
-    // Try to read image content
-    if let Ok(image) = clipboard.read_image() {
-        let rgba = image.rgba();
-        if !rgba.is_empty() {
-            let hash = compute_hash_bytes(&rgba);
-
-            {
-                let last_hash = monitor.last_hash.lock().unwrap();
-                if last_hash.as_ref() == Some(&hash) {
-                    return Ok(None);
-                }
-            }
-
-            let base64_content = STANDARD.encode(&rgba);
-
-            let item = ClipboardItem {
-                id: Uuid::new_v4().to_string(),
-                content_type: "image".to_string(),
-                content: base64_content,
-                preview: format!("Image ({}x{})", image.width(), image.height()),
-                hash: hash.clone(),
-                is_pinned: false,
-                collection_id: None,
-                created_at: Utc::now(),
-                expires_at: None,
-            };
-
-            db.insert_item(&item).map_err(|e| e.to_string())?;
-            db.enforce_limit(100).map_err(|e| e.to_string())?;
-
-            *monitor.last_hash.lock().unwrap() = Some(hash);
-            let _ = app.emit("clipboard-changed", &item);
-
-            return Ok(Some(item));
+    fn raw_content(&self) -> String {
+        match self {
+            PasteContent::Text(s) => s.clone(),
+            PasteContent::Url(s) => s.clone(),
+            PasteContent::Files(paths) => paths.join("\n"),
+            PasteContent::Image { hash, .. } => format!("[image:{}]", hash),
         }
     }
-
-    Ok(None)
 }
 
-fn compute_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
+fn images_dir(app_data_dir: &PathBuf) -> PathBuf {
+    let dir = app_data_dir.join("images");
+    std::fs::create_dir_all(&dir).ok();
+    dir
 }
 
-fn compute_hash_bytes(content: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content);
-    format!("{:x}", hasher.finalize())
+fn save_image_to_disk(app_data_dir: &PathBuf, hash: &str, data: &[u8]) -> Option<String> {
+    let dir = images_dir(app_data_dir);
+    let path = dir.join(format!("{}.png", hash));
+    if !path.exists() {
+        std::fs::write(&path, data).ok()?;
+    }
+    Some(path.to_string_lossy().to_string())
+}
+
+/// Check if the pasteboard contains any of the given UTI marker types.
+#[cfg(target_os = "macos")]
+pub fn pasteboard_has_type(type_str: &str) -> bool {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::{class, msg_send, sel, sel_impl};
+    unsafe {
+        let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
+        if pb.is_null() {
+            return false;
+        }
+        let ns_type: id = NSString::alloc(nil).init_str(type_str);
+        let types: id = msg_send![pb, types];
+        if types.is_null() {
+            return false;
+        }
+        let contains: bool = msg_send![types, containsObject: ns_type];
+        contains
+    }
+}
+
+/// Read the current clipboard via NSPasteboard. Prefers files → urls → text → image.
+#[cfg(target_os = "macos")]
+pub fn read_pasteboard() -> Option<PasteContent> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+
+    unsafe {
+        let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
+        if pb.is_null() {
+            return None;
+        }
+
+        let read_string_for = |type_str: &str| -> Option<String> {
+            let ns_type: id = NSString::alloc(nil).init_str(type_str);
+            let s: id = msg_send![pb, stringForType: ns_type];
+            if s.is_null() {
+                return None;
+            }
+            let c: *const c_char = msg_send![s, UTF8String];
+            if c.is_null() {
+                return None;
+            }
+            CStr::from_ptr(c).to_str().ok().map(|s| s.to_string())
+        };
+
+        // Files (NSFilenamesPboardType -> property list of paths)
+        {
+            let ns_type: id = NSString::alloc(nil).init_str("NSFilenamesPboardType");
+            let arr: id = msg_send![pb, propertyListForType: ns_type];
+            if !arr.is_null() {
+                let count: usize = msg_send![arr, count];
+                if count > 0 {
+                    let mut paths: Vec<String> = Vec::with_capacity(count);
+                    for i in 0..count {
+                        let p: id = msg_send![arr, objectAtIndex: i];
+                        if p.is_null() {
+                            continue;
+                        }
+                        let c: *const c_char = msg_send![p, UTF8String];
+                        if c.is_null() {
+                            continue;
+                        }
+                        if let Ok(s) = CStr::from_ptr(c).to_str() {
+                            paths.push(s.to_string());
+                        }
+                    }
+                    if !paths.is_empty() {
+                        return Some(PasteContent::Files(paths));
+                    }
+                }
+            }
+        }
+
+        // Image types — check before URL/text so "Copy Image" from browsers
+        // is captured as an image rather than the accompanying source URL.
+        for img_type in &["public.png", "public.tiff", "public.jpeg"] {
+            let ns_type: id = NSString::alloc(nil).init_str(img_type);
+            let data: id = msg_send![pb, dataForType: ns_type];
+            if !data.is_null() {
+                let len: usize = msg_send![data, length];
+                let bytes: *const u8 = msg_send![data, bytes];
+                let slice = std::slice::from_raw_parts(bytes, len);
+                let mut hasher = Sha256::new();
+                hasher.update(slice);
+                let hash = format!("{:x}", hasher.finalize());
+                return Some(PasteContent::Image { hash, data: slice.to_vec() });
+            }
+        }
+
+        // URL (public.url -> string)
+        if let Some(s) = read_string_for("public.url") {
+            if !s.trim().is_empty() {
+                return Some(PasteContent::Url(s));
+            }
+        }
+
+        // Plain text (try both modern and legacy UTIs)
+        for text_type in &["public.utf8-plain-text", "NSStringPboardType"] {
+            if let Some(s) = read_string_for(text_type) {
+                if !s.is_empty() {
+                    return Some(PasteContent::Text(s));
+                }
+            }
+        }
+
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn read_pasteboard() -> Option<PasteContent> {
+    None
+}
+
+/// Detect a richer text type for plain text content (url/code/text).
+fn detect_text_type(text: &str) -> &'static str {
+    let trimmed = text.trim();
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("ftp://")
+    {
+        return "url";
+    }
+    if looks_like_code(trimmed) {
+        return "code";
+    }
+    "text"
+}
+
+fn looks_like_code(text: &str) -> bool {
+    let indicators = [
+        "function ", "const ", "let ", "var ", "import ", "export ", "class ", "def ",
+        "fn ", "pub ", "async ", "await ", "return ", "if (", "for (", "while (",
+        "=>", "->", "();",
+    ];
+    let lower = text.to_lowercase();
+    indicators.iter().filter(|i| lower.contains(*i)).count() >= 2
+}
+
+fn compute_hash(s: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    format!("{:x}", h.finalize())
 }
 
 fn create_text_preview(text: &str) -> String {
@@ -134,7 +235,6 @@ fn create_text_preview(text: &str) -> String {
         .take(500)
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect();
-
     if text.len() > 500 {
         format!("{}...", preview)
     } else {
@@ -142,91 +242,134 @@ fn create_text_preview(text: &str) -> String {
     }
 }
 
-fn detect_content_type(text: &str) -> String {
-    let trimmed = text.trim();
+/// Core capture: read the pasteboard, dedupe by content hash, gate on
+/// excluded_apps / excluded_types / Yoink-frontmost, and insert a new item.
+pub fn capture_clipboard<R: Runtime>(app: &AppHandle<R>) -> Result<Option<ClipboardItem>, String> {
+    let monitor = app
+        .try_state::<ClipboardMonitor>()
+        .ok_or_else(|| "ClipboardMonitor not initialized".to_string())?;
 
-    // Check if it's a file path (Unix or Windows)
-    if trimmed.starts_with('/') || (trimmed.len() > 2 && &trimmed[1..3] == ":\\") {
-        // Check for multiple paths (newline separated)
-        if trimmed.contains('\n') {
-            return "files".to_string();
+    // Check NSPasteboard marker types (transient, autogenerated, concealed).
+    #[cfg(target_os = "macos")]
+    if let Some(mgr) = app.try_state::<SettingsManager>() {
+        let s = mgr.get();
+        if s.ignore_transient && pasteboard_has_type("org.nspasteboard.TransientType") {
+            return Ok(None);
         }
-        return "file".to_string();
+        if s.ignore_autogenerated && pasteboard_has_type("org.nspasteboard.AutoGeneratedType") {
+            return Ok(None);
+        }
+        if s.ignore_concealed && pasteboard_has_type("org.nspasteboard.ConcealedType") {
+            return Ok(None);
+        }
     }
 
-    // Check if it's a URL
-    if trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("ftp://")
+    let Some(content) = read_pasteboard() else {
+        return Ok(None);
+    };
+
+    let raw = content.raw_content();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let hash = compute_hash(&raw);
+
+    // Dedup: skip if content hash matches what we last captured.
     {
-        return "url".to_string();
+        let last = monitor.last_hash.lock().unwrap();
+        if last.as_ref() == Some(&hash) {
+            return Ok(None);
+        }
     }
 
-    // Check if it looks like code
-    if looks_like_code(trimmed) {
-        return "code".to_string();
+    let content_type = content.type_tag().to_string();
+
+    // Frontmost-app gating: skip if Yoink is frontmost or app is excluded.
+    // Don't update last_hash here so the item gets captured once the app is no longer frontmost.
+    if let Some(frontmost) = exclusions::get_frontmost_app() {
+        #[cfg(target_os = "macos")]
+        if frontmost.eq_ignore_ascii_case(YOINK_BUNDLE_ID) {
+            return Ok(None);
+        }
+        if let Some(mgr) = app.try_state::<SettingsManager>() {
+            let s = mgr.get();
+            let excluded_app = s
+                .excluded_apps
+                .iter()
+                .any(|e| !e.is_empty() && frontmost.to_lowercase().contains(&e.to_lowercase()));
+            if excluded_app {
+                return Ok(None);
+            }
+        }
     }
 
-    "text".to_string()
+    // Type gating
+    if let Some(mgr) = app.try_state::<SettingsManager>() {
+        let s = mgr.get();
+        if s.excluded_types.iter().any(|t| t == &content_type) {
+            return Ok(None);
+        }
+    }
+
+    // For images, save the data to disk and use the file path as content.
+    let (final_content, preview) = match &content {
+        PasteContent::Image { hash: img_hash, data } => {
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| e.to_string())?;
+            let path = save_image_to_disk(&app_data_dir, img_hash, data)
+                .unwrap_or_else(|| raw.clone());
+            (path, "[image]".to_string())
+        }
+        PasteContent::Text(t) => (raw.clone(), create_text_preview(t)),
+        PasteContent::Url(u) => (raw.clone(), create_text_preview(u)),
+        PasteContent::Files(paths) => (raw.clone(), paths.join("\n")),
+    };
+
+    let item = ClipboardItem {
+        id: Uuid::new_v4().to_string(),
+        content_type,
+        content: final_content,
+        preview,
+        hash: hash.clone(),
+        created_at: Utc::now(),
+    };
+
+    let db = app
+        .try_state::<Database>()
+        .ok_or_else(|| "Database not initialized".to_string())?;
+    db.insert_item(&item).map_err(|e| e.to_string())?;
+
+    let history_limit = app
+        .try_state::<SettingsManager>()
+        .map(|m| m.get().history_limit)
+        .unwrap_or(100);
+    db.enforce_limit(history_limit).map_err(|e| e.to_string())?;
+
+    monitor.set_last_hash(Some(hash));
+    let _ = app.emit("clipboard-changed", &item);
+
+    log::info!("[capture] stored {} item", item.content_type);
+    Ok(Some(item))
 }
 
-fn looks_like_code(text: &str) -> bool {
-    let code_indicators = [
-        "function ",
-        "const ",
-        "let ",
-        "var ",
-        "import ",
-        "export ",
-        "class ",
-        "def ",
-        "fn ",
-        "pub ",
-        "async ",
-        "await ",
-        "return ",
-        "if (",
-        "for (",
-        "while (",
-        "=>",
-        "->",
-        "{}",
-        "();",
-    ];
-
-    let text_lower = text.to_lowercase();
-    let indicator_count = code_indicators
-        .iter()
-        .filter(|&indicator| text_lower.contains(&indicator.to_lowercase()))
-        .count();
-
-    // If multiple code indicators found, likely code
-    indicator_count >= 2
+#[tauri::command]
+pub async fn check_clipboard<R: Runtime>(app: AppHandle<R>) -> Result<Option<ClipboardItem>, String> {
+    capture_clipboard(&app)
 }
 
-// Tauri commands
+// ---- Tauri commands the UI uses ----
+
 #[tauri::command]
 pub async fn get_clipboard_items(
     db: tauri::State<'_, Database>,
     limit: u32,
     offset: u32,
     search: Option<String>,
-    collection_id: Option<String>,
 ) -> Result<Vec<ClipboardItem>, String> {
-    db.get_items(
-        limit,
-        offset,
-        search.as_deref(),
-        collection_id.as_deref(),
-    )
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_pinned_items(
-    db: tauri::State<'_, Database>,
-) -> Result<Vec<ClipboardItem>, String> {
-    db.get_pinned_items().map_err(|e| e.to_string())
+    db.get_items(limit, offset, search.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -235,16 +378,6 @@ pub async fn delete_clipboard_item(
     id: String,
 ) -> Result<(), String> {
     db.delete_item(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn pin_item(db: tauri::State<'_, Database>, id: String) -> Result<(), String> {
-    db.pin_item(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn unpin_item(db: tauri::State<'_, Database>, id: String) -> Result<(), String> {
-    db.unpin_item(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -259,70 +392,61 @@ pub async fn paste_item<R: Runtime>(
     id: String,
 ) -> Result<(), String> {
     let item = db.get_item(&id).map_err(|e| e.to_string())?;
-
     if let Some(item) = item {
-        let clipboard = app.clipboard();
-
-        match item.content_type.as_str() {
-            "image" => {
-                // Decode base64 and write as image
-                if let Ok(_bytes) = STANDARD.decode(&item.content) {
-                    // For now, write as text since image writing needs raw image data
-                    // TODO: Properly handle image pasting
-                    clipboard
-                        .write_text(&item.preview)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            _ => {
-                clipboard
-                    .write_text(&item.content)
-                    .map_err(|e| e.to_string())?;
-            }
+        if item.content_type == "image" {
+            write_image_to_clipboard(&app, &item.content)?;
+        } else {
+            app.clipboard()
+                .write_text(&item.content)
+                .map_err(|e| e.to_string())?;
         }
     }
-
     Ok(())
 }
 
 #[tauri::command]
-pub async fn move_to_collection(
-    db: tauri::State<'_, Database>,
-    item_id: String,
-    collection_id: Option<String>,
-) -> Result<(), String> {
-    db.move_item_to_collection(&item_id, collection_id.as_deref())
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn set_expiration(
-    db: tauri::State<'_, Database>,
-    item_id: String,
-    expires_at: Option<String>,
-) -> Result<(), String> {
-    let expires = expires_at.and_then(|s| {
-        chrono::DateTime::parse_from_rfc3339(&s)
-            .ok()
-            .map(|dt| dt.with_timezone(&Utc))
-    });
-
-    db.set_item_expiration(&item_id, expires)
-        .map_err(|e| e.to_string())
-}
-
-/// Paste item and simulate Cmd+V keystroke (for Flycut-style behavior)
-/// This writes the content to clipboard, hides the window, waits for focus
-/// to return to the previous app, then simulates Cmd+V.
-/// Can be called both as a Tauri command and directly from Rust.
-pub async fn do_paste_and_simulate<R: Runtime>(
+pub async fn get_image_base64<R: Runtime>(
     app: AppHandle<R>,
+    db: tauri::State<'_, Database>,
     id: String,
-) -> Result<(), String> {
-    // Exit hotkey mode immediately to prevent the modifier-release poller
-    // from also trying to paste (race condition)
-    if let Some(hotkey_state) = app.try_state::<HotkeyModeState>() {
-        hotkey_state.exit();
+) -> Result<Option<String>, String> {
+    let item = db.get_item(&id).map_err(|e| e.to_string())?;
+    let Some(item) = item else { return Ok(None) };
+    if item.content_type != "image" {
+        return Ok(None);
+    }
+
+    use base64::Engine;
+
+    // New format: content is a file path
+    let path = std::path::Path::new(&item.content);
+    if path.exists() && path.is_file() {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        return Ok(Some(format!("data:image/png;base64,{}", b64)));
+    }
+
+    // Old format: content is [image:{hash}] — try to find the file by hash
+    if item.content.starts_with("[image:") && item.content.ends_with(']') {
+        let hash = &item.content[7..item.content.len() - 1];
+        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let candidate = app_data_dir.join("images").join(format!("{}.png", hash));
+        if candidate.exists() {
+            let data = std::fs::read(&candidate).map_err(|e| e.to_string())?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            return Ok(Some(format!("data:image/png;base64,{}", b64)));
+        }
+    }
+
+    log::warn!("[get_image_base64] image not found for item {}: content={}", id, &item.content[..item.content.len().min(100)]);
+    Ok(None)
+}
+
+/// Write `id`'s content to the clipboard, hide the panel, restore focus, and
+/// simulate Cmd+V — used when the user picks an item from the panel.
+pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    if let Some(state) = app.try_state::<crate::window::HotkeyModeState>() {
+        state.exit();
     }
 
     let item = {
@@ -331,40 +455,21 @@ pub async fn do_paste_and_simulate<R: Runtime>(
     };
 
     if let Some(item) = item {
-        let clipboard = app.clipboard();
-
-        // Write content to clipboard
-        match item.content_type.as_str() {
-            "image" => {
-                // For now, write as text (TODO: handle image properly)
-                if let Ok(_bytes) = STANDARD.decode(&item.content) {
-                    clipboard
-                        .write_text(&item.preview)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            _ => {
-                clipboard
-                    .write_text(&item.content)
-                    .map_err(|e| e.to_string())?;
-            }
+        if item.content_type == "image" {
+            write_image_to_clipboard_and_remember(&app, &item.content)?;
+        } else {
+            write_to_clipboard_and_remember(&app, &item.content)?;
         }
-
-        // Hide window (this also restores focus to the previous app)
         crate::window::hide_window(app.clone()).await?;
-
-        // Wait for focus to fully return to previous app
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Simulate Cmd+V on main thread
+        tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+        #[cfg(target_os = "macos")]
         app.run_on_main_thread(|| {
             if let Err(e) = keyboard::simulate_cmd_v() {
-                log::warn!("Failed to simulate Cmd+V: {}", e);
+                log::warn!("simulate_cmd_v failed: {}", e);
             }
         })
         .map_err(|e| e.to_string())?;
     }
-
     Ok(())
 }
 
@@ -375,4 +480,120 @@ pub async fn paste_and_simulate<R: Runtime>(
     id: String,
 ) -> Result<(), String> {
     do_paste_and_simulate(app, id).await
+}
+
+/// Cmd+V interception — silently paste the most recent history item with no
+/// window shown. Pre-records the hash so the background poller doesn't
+/// re-capture our own write.
+pub async fn paste_latest_silent<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let item = {
+        let db = app
+            .try_state::<Database>()
+            .ok_or_else(|| "Database not initialized".to_string())?;
+        db.get_items(1, 0, None)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .next()
+    };
+
+    let Some(item) = item else {
+        #[cfg(target_os = "macos")]
+        app.run_on_main_thread(|| {
+            let _ = keyboard::simulate_cmd_v();
+        })
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+
+    // If the clipboard already holds something different from our latest
+    // history item, another app (e.g. hearye dictation) just wrote to it.
+    // Let the paste go through unmodified so their content reaches the
+    // target app instead of being overwritten by Yoink.
+    let clipboard_changed = read_pasteboard()
+        .map(|c| compute_hash(&c.raw_content()) != item.hash)
+        .unwrap_or(false);
+
+    if !clipboard_changed {
+        write_to_clipboard_and_remember(&app, &item.content)?;
+    } else {
+        log::info!("[paste] clipboard differs from latest item, passing through");
+    }
+
+    #[cfg(target_os = "macos")]
+    app.run_on_main_thread(|| {
+        if let Err(e) = keyboard::simulate_cmd_v() {
+            log::warn!("simulate_cmd_v failed: {}", e);
+        }
+    })
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Write `text` to the clipboard and tell the monitor to ignore the resulting
+/// changeCount bump so we don't re-record what we just wrote.
+fn write_to_clipboard_and_remember<R: Runtime>(
+    app: &AppHandle<R>,
+    text: &str,
+) -> Result<(), String> {
+    app.clipboard()
+        .write_text(text)
+        .map_err(|e| e.to_string())?;
+
+    let hash = compute_hash(text);
+    if let Some(monitor) = app.try_state::<ClipboardMonitor>() {
+        monitor.set_last_hash(Some(hash));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn write_image_to_clipboard<R: Runtime>(
+    app: &AppHandle<R>,
+    path: &str,
+) -> Result<(), String> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    unsafe {
+        let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
+        let _: () = msg_send![pb, clearContents];
+        let ns_data: id = msg_send![class!(NSData), dataWithBytes:data.as_ptr() length:data.len()];
+        let png_type: id = NSString::alloc(nil).init_str("public.png");
+        let _: bool = msg_send![pb, setData:ns_data forType:png_type];
+    }
+
+    let _ = app; // silence unused warning
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_image_to_clipboard<R: Runtime>(
+    _app: &AppHandle<R>,
+    _path: &str,
+) -> Result<(), String> {
+    Err("Image clipboard write not supported on this platform".to_string())
+}
+
+fn write_image_to_clipboard_and_remember<R: Runtime>(
+    app: &AppHandle<R>,
+    path: &str,
+) -> Result<(), String> {
+    write_image_to_clipboard(app, path)?;
+
+    // Hash the image bytes the same way read_pasteboard does, so the monitor
+    // recognises this as "our own write" and skips re-capture.
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let img_hash = format!("{:x}", hasher.finalize());
+    let raw = format!("[image:{}]", img_hash);
+    let hash = compute_hash(&raw);
+
+    if let Some(monitor) = app.try_state::<ClipboardMonitor>() {
+        monitor.set_last_hash(Some(hash));
+    }
+    Ok(())
 }

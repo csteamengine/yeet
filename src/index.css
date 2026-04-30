@@ -3,66 +3,30 @@
 @tailwind utilities;
 
 :root {
-  /* Blue accent (default) */
+  color-scheme: dark;
+
   --accent-50: #eff6ff;
   --accent-100: #dbeafe;
   --accent-200: #bfdbfe;
   --accent-300: #93c5fd;
   --accent-400: #60a5fa;
-  --accent-500: #3b82f6;
+  --accent-500: #4a9eff;
   --accent-600: #2563eb;
   --accent-700: #1d4ed8;
   --accent-800: #1e40af;
   --accent-900: #1e3a8a;
 
-  --bg-primary: #ffffff;
-  --bg-secondary: #f9fafb;
-  --bg-tertiary: #f3f4f6;
-  --text-primary: #111827;
-  --text-secondary: #6b7280;
-  --text-tertiary: #9ca3af;
-  --border-color: #e5e7eb;
-  --shadow-color: rgba(0, 0, 0, 0.1);
-}
-
-.dark {
-  --bg-primary: #1f2937;
-  --bg-secondary: #111827;
-  --bg-tertiary: #374151;
-  --text-primary: #f9fafb;
-  --text-secondary: #9ca3af;
-  --text-tertiary: #6b7280;
-  --border-color: #374151;
+  --bg-primary: rgba(28, 28, 30, 0.35);
+  --bg-secondary: rgba(255, 255, 255, 0.04);
+  --bg-tertiary: rgba(255, 255, 255, 0.08);
+  --text-primary: #f0f0f0;
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-tertiary: rgba(255, 255, 255, 0.35);
+  --border-color: rgba(255, 255, 255, 0.06);
   --shadow-color: rgba(0, 0, 0, 0.3);
+  --accent-color: #4a9eff;
 }
 
-/* Purple accent */
-.accent-purple {
-  --accent-50: #faf5ff;
-  --accent-100: #f3e8ff;
-  --accent-200: #e9d5ff;
-  --accent-300: #d8b4fe;
-  --accent-400: #c084fc;
-  --accent-500: #a855f7;
-  --accent-600: #9333ea;
-  --accent-700: #7e22ce;
-  --accent-800: #6b21a8;
-  --accent-900: #581c87;
-}
-
-/* Green accent */
-.accent-green {
-  --accent-50: #f0fdf4;
-  --accent-100: #dcfce7;
-  --accent-200: #bbf7d0;
-  --accent-300: #86efac;
-  --accent-400: #4ade80;
-  --accent-500: #22c55e;
-  --accent-600: #16a34a;
-  --accent-700: #15803d;
-  --accent-800: #166534;
-  --accent-900: #14532d;
-}
 
 * {
   margin: 0;
@@ -109,25 +73,9 @@ body,
   -webkit-backdrop-filter: blur(20px);
 }
 
-@supports (backdrop-filter: blur(20px)) {
-  .glass {
-    background: rgba(255, 255, 255, 0.8);
-  }
-
-  .dark .glass {
-    background: rgba(31, 41, 55, 0.85);
-  }
-}
-
-/* Selection styling */
 ::selection {
-  background: var(--accent-200);
-  color: var(--accent-900);
-}
-
-.dark ::selection {
-  background: var(--accent-700);
-  color: var(--accent-100);
+  background: rgba(74, 158, 255, 0.3);
+  color: #fff;
 }
 
 /* Prevent text selection on UI elements */

@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useClipboardStore } from './clipboardStore';
 
 interface HotkeyModeState {
@@ -58,18 +57,17 @@ export const useHotkeyModeStore = create<HotkeyModeState>((set, get) => ({
   },
 
   setupListeners: async () => {
-    // Listen for hotkey-mode-started event from backend
-    const unlistenHotkeyMode = await listen('hotkey-mode-started', () => {
+    const webview = getCurrentWebviewWindow();
+
+    const unlistenHotkeyMode = await webview.listen('hotkey-mode-started', () => {
       get().enterHotkeyMode();
     });
 
-    // Listen for panel-hidden event to exit hotkey mode when window loses focus
-    const unlistenPanelHidden = await listen('panel-hidden', () => {
+    const unlistenPanelHidden = await webview.listen('panel-hidden', () => {
       get().exitHotkeyMode();
     });
 
-    // Listen for hotkey-cycle event from backend (global shortcut handler or polling thread)
-    const unlistenCycle = await listen('hotkey-cycle', () => {
+    const unlistenCycle = await webview.listen('hotkey-cycle', () => {
       get().cycleNext();
     });
 

@@ -1,11 +1,8 @@
-use tauri::{Manager, Runtime, WebviewWindow};
+use tauri::{Emitter, Manager, Runtime, WebviewWindow};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "macos")]
 use std::sync::Mutex;
-
-#[cfg(target_os = "macos")]
-use tauri::Emitter;
 
 #[cfg(target_os = "macos")]
 use tauri_nspanel::{
@@ -14,9 +11,6 @@ use tauri_nspanel::{
     raw_nspanel::RawNSPanel,
     ManagerExt, WebviewWindowExt as NsPanelExt,
 };
-
-#[cfg(target_os = "macos")]
-use cocoa::appkit::NSWindowCollectionBehavior;
 
 #[cfg(target_os = "macos")]
 use cocoa::base::id;
@@ -41,10 +35,6 @@ impl PanelHideGuard {
 
     pub fn clear_hiding(&self) {
         self.is_hiding.store(false, Ordering::SeqCst);
-    }
-
-    pub fn is_hiding(&self) -> bool {
-        self.is_hiding.load(Ordering::SeqCst)
     }
 }
 
@@ -74,6 +64,29 @@ impl HotkeyModeState {
     #[allow(dead_code)] // Used in panel delegate closure
     pub fn is_active(&self) -> bool {
         self.is_active.load(Ordering::SeqCst)
+    }
+}
+
+/// Tracks whether the settings panel is open (synced from frontend).
+/// The modifier-release polling thread checks this to avoid dismissing
+/// the window while the user is editing settings.
+pub struct SettingsOpenState {
+    is_open: AtomicBool,
+}
+
+impl SettingsOpenState {
+    pub fn new() -> Self {
+        Self {
+            is_open: AtomicBool::new(false),
+        }
+    }
+
+    pub fn set(&self, open: bool) {
+        self.is_open.store(open, Ordering::SeqCst);
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.is_open.load(Ordering::SeqCst)
     }
 }
 
@@ -159,110 +172,65 @@ pub trait WebviewWindowExt {
 #[cfg(target_os = "macos")]
 impl<R: Runtime> WebviewWindowExt for WebviewWindow<R> {
     fn to_yoink_panel(&self) -> tauri::Result<ShareId<RawNSPanel>> {
+        use cocoa::appkit::NSWindowCollectionBehavior;
+
         let panel = self.to_panel()?;
 
-        // Set panel level to floating (NSFloatingWindowLevel = 5)
-        panel.set_level(5);
+        // NonActivatingPanel: panel doesn't steal activation from the
+        // frontmost app, which is what lets it overlay fullscreen Spaces
+        // without yanking the user out.
+        #[allow(non_upper_case_globals)]
+        const NSWindowStyleMaskNonActivatingPanel: i32 = 1 << 7;
+        panel.set_style_mask(NSWindowStyleMaskNonActivatingPanel);
 
-        // Set collection behavior for proper space handling
-        let behavior = NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorTransient;
-        panel.set_collection_behaviour(behavior);
+        // Level 24 (kCGPopUpMenuWindowLevel) — above normal windows and
+        // fullscreen apps but below screensaver/security dialogs.
+        panel.set_level(24);
 
-        // Set as floating panel
-        panel.set_floating_panel(true);
+        // CanJoinAllSpaces: visible on every Space / desktop.
+        // FullScreenAuxiliary: allowed to show alongside a fullscreen app.
+        panel.set_collection_behaviour(
+            NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+        );
 
-        // Setup delegate for event handling
-        let app_handle = self.app_handle().clone();
+        panel.set_hides_on_deactivate(false);
+
+        // Delegate — sticky panel, resignKey is a no-op.
         let delegate = panel_delegate!(YoinkPanelDelegate {
             window_did_resign_key
         });
-
         delegate.set_listener(Box::new(move |delegate_name: String| {
             if delegate_name == "window_did_resign_key" {
-                log::info!("panel resigned key window");
-
-                // Skip if a programmatic hide is already in progress
-                // (prevents re-entrant order_out from hide_window → delegate → order_out)
-                if let Some(guard) = app_handle.try_state::<PanelHideGuard>() {
-                    if guard.is_hiding() {
-                        log::info!("Programmatic hide in progress, skipping delegate hide");
-                        return;
-                    }
-                }
-
-                // Check if hotkey mode is active (user holding modifiers)
-                let hotkey_mode_active = if let Some(hotkey_state) =
-                    app_handle.try_state::<HotkeyModeState>()
-                {
-                    hotkey_state.is_active()
-                } else {
-                    false
-                };
-
-                // In hotkey mode, don't auto-hide - user is still holding modifiers
-                // Re-activate app and re-make key window so webview keeps receiving
-                // keyboard events (ESC, V cycling, arrow keys, etc.)
-                if hotkey_mode_active {
-                    log::info!("Hotkey mode active, re-establishing key window");
-                    use objc::{msg_send, sel, sel_impl, class};
-                    unsafe {
-                        let ns_app: cocoa::base::id =
-                            msg_send![class!(NSApplication), sharedApplication];
-                        let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
-                    }
-                    if let Ok(panel) = app_handle.get_webview_panel(MAIN_WINDOW_LABEL) {
-                        panel.make_key_window();
-                    }
-                    return;
-                }
-
-                // Check if sticky mode is enabled
-                let sticky_mode = if let Some(settings_manager) =
-                    app_handle.try_state::<crate::settings::SettingsManager>()
-                {
-                    settings_manager.get().sticky_mode
-                } else {
-                    false
-                };
-
-                // In sticky mode, don't auto-hide on focus loss
-                if sticky_mode {
-                    log::info!("Sticky mode enabled, not hiding panel");
-                    return;
-                }
-
-                // Hide panel when it loses focus
-                if let Ok(panel) = app_handle.get_webview_panel(MAIN_WINDOW_LABEL) {
-                    if panel.is_visible() {
-                        panel.order_out(None);
-                        let _ = app_handle.emit("panel-hidden", ());
-                    }
-                }
+                log::info!("panel resigned key window (ignored — panel is sticky)");
             }
         }));
-
         panel.set_delegate(delegate);
 
         Ok(panel)
     }
 
     fn center_at_cursor_monitor(&self) -> Result<(), String> {
-        // Get monitor with cursor
-        let monitor = monitor::get_monitor_with_cursor()
-            .ok_or_else(|| "Monitor with cursor not found".to_string())?;
+        // Prefer the monitor under the cursor so the panel follows the
+        // active display (and its active Space, including fullscreen apps)
+        // instead of sticking to wherever the hidden window last sat.
+        let monitor = self
+            .cursor_position()
+            .ok()
+            .and_then(|p| self.monitor_from_point(p.x, p.y).ok().flatten())
+            .or_else(|| self.current_monitor().ok().flatten())
+            .or_else(|| self.primary_monitor().ok().flatten())
+            .ok_or_else(|| "no monitor available".to_string())?;
 
         let scale = monitor.scale_factor();
         let monitor_size = monitor.size().to_logical::<f64>(scale);
         let monitor_pos = monitor.position().to_logical::<f64>(scale);
 
-        // Get window size
-        let window_size = self.outer_size()
+        let window_size = self
+            .outer_size()
             .map_err(|e| e.to_string())?
             .to_logical::<f64>(scale);
 
-        // Calculate centered position (slightly above center)
         let x = monitor_pos.x + (monitor_size.width - window_size.width) / 2.0;
         let y = monitor_pos.y + (monitor_size.height - window_size.height) / 2.0 - 50.0;
 
@@ -393,19 +361,11 @@ pub async fn show_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), Str
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 let _ = window.center_at_cursor_monitor();
             }
-            // AppKit operations must run on the main thread
             app.run_on_main_thread(move || {
-                use objc::{msg_send, sel, sel_impl, class};
-
-                // Activate the application to receive focus (required for accessory apps)
-                unsafe {
-                    let ns_app: cocoa::base::id = msg_send![class!(NSApplication), sharedApplication];
-                    let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
-                }
-
                 panel.show();
-                panel.make_key_window();
-            }).map_err(|e| e.to_string())?;
+            })
+            .map_err(|e| e.to_string())?;
+            let _ = app.emit("panel-shown", ());
             return Ok(());
         }
     }
@@ -414,6 +374,7 @@ pub async fn show_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), Str
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
     }
+    let _ = app.emit("panel-shown", ());
 
     Ok(())
 }
@@ -509,17 +470,10 @@ pub async fn toggle_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), S
                 }
 
                 app.run_on_main_thread(move || {
-                    use objc::{msg_send, sel, sel_impl, class};
-
-                    // Activate the application to receive focus (required for accessory apps)
-                    unsafe {
-                        let ns_app: cocoa::base::id = msg_send![class!(NSApplication), sharedApplication];
-                        let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
-                    }
-
                     panel.show();
-                    panel.make_key_window();
-                }).map_err(|e| e.to_string())?;
+                })
+                .map_err(|e| e.to_string())?;
+                let _ = app.emit("panel-shown", ());
             }
 
             return Ok(());
@@ -533,6 +487,7 @@ pub async fn toggle_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), S
         } else {
             window.show().map_err(|e| e.to_string())?;
             window.set_focus().map_err(|e| e.to_string())?;
+            let _ = app.emit("panel-shown", ());
         }
     }
 
@@ -578,4 +533,28 @@ pub fn set_selected_item(state: tauri::State<'_, SelectedItemState>, id: String)
 #[tauri::command]
 pub fn is_hotkey_mode_active(hotkey_state: tauri::State<'_, HotkeyModeState>) -> bool {
     hotkey_state.is_active()
+}
+
+#[tauri::command]
+pub fn set_settings_open(state: tauri::State<'_, SettingsOpenState>, open: bool) {
+    state.set(open);
+}
+
+/// Returns true if Cmd or Shift is currently held down.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn are_modifiers_held() -> bool {
+    extern "C" {
+        fn CGEventSourceFlagsState(stateID: u32) -> u64;
+    }
+    const MASK_COMMAND: u64 = 0x100000;
+    const MASK_SHIFT: u64 = 0x20000;
+    let flags = unsafe { CGEventSourceFlagsState(1) };
+    (flags & MASK_COMMAND != 0) || (flags & MASK_SHIFT != 0)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn are_modifiers_held() -> bool {
+    false
 }

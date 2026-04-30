@@ -24,7 +24,7 @@ export function SearchBar() {
   }, []);
 
   return (
-    <div className="relative px-4 pt-4 pb-2">
+    <div className="relative flex-1">
       <div className="relative">
         <svg
           className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)]"
@@ -46,11 +46,11 @@ export function SearchBar() {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search clipboard history..."
           className={clsx(
-            'w-full pl-10 pr-10 py-2.5 rounded-lg',
-            'bg-[var(--bg-secondary)] text-[var(--text-primary)]',
-            'border border-[var(--border-color)]',
+            'w-full pl-10 pr-10 py-1.5 rounded-md text-[13px]',
+            'bg-[rgba(255,255,255,0.06)] text-[var(--text-primary)]',
+            'border border-[rgba(255,255,255,0.08)]',
             'placeholder-[var(--text-tertiary)]',
-            'focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent',
+            'focus:outline-none focus:border-[rgba(120,180,255,0.6)]',
             'transition-all duration-150'
           )}
         />

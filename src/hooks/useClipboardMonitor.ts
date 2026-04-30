@@ -1,42 +1,27 @@
-import { useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useEffect } from 'react';
 import { useClipboardStore } from '@/stores/clipboardStore';
 
 export function useClipboardMonitor() {
-  const { loadItems, loadPinnedItems, loadCollections, loadTags, setupListeners } =
-    useClipboardStore();
-  const intervalRef = useRef<number | null>(null);
-
   useEffect(() => {
-    // Load initial data
-    loadItems();
-    loadPinnedItems();
-    loadCollections();
-    loadTags();
+    useClipboardStore.getState().loadItems();
 
-    // Setup event listeners
     let cleanup: (() => void) | undefined;
-
-    setupListeners().then((unsub) => {
+    useClipboardStore.getState().setupListeners().then((unsub) => {
       cleanup = unsub;
     });
 
-    // Poll for clipboard changes every 500ms
-    const pollClipboard = async () => {
-      try {
-        await invoke('check_clipboard');
-      } catch (error) {
-        console.error('Clipboard poll error:', error);
+    let stopped = false;
+    async function poll() {
+      while (!stopped) {
+        await useClipboardStore.getState().loadItems();
+        await new Promise((r) => setTimeout(r, 300));
       }
-    };
-
-    intervalRef.current = window.setInterval(pollClipboard, 500);
+    }
+    poll();
 
     return () => {
+      stopped = true;
       cleanup?.();
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
     };
-  }, [loadItems, loadPinnedItems, loadCollections, loadTags, setupListeners]);
+  }, []);
 }

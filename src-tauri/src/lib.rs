@@ -1,16 +1,14 @@
 mod clipboard;
-mod collections;
 mod database;
 mod exclusions;
 mod hotkey;
 mod keyboard;
-mod qrcode;
 mod settings;
 mod window;
 
 use clipboard::ClipboardMonitor;
 use database::Database;
-use hotkey::HotkeyManager;
+use hotkey::{HotkeyManager, PasteHotkeyManager};
 use settings::SettingsManager;
 
 #[cfg(target_os = "macos")]
@@ -19,7 +17,7 @@ use window::{set_window_blur, HotkeyModeState, PanelHideGuard, PreviousAppState,
 #[cfg(not(target_os = "macos"))]
 use window::HotkeyModeState;
 
-use window::SelectedItemState;
+use window::{SelectedItemState, SettingsOpenState};
 
 use tauri::{
     image::Image,
@@ -45,53 +43,86 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            // Hide dock icon on macOS (makes it a menu bar only app)
+            // Menu-bar-only on macOS.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
 
-            // Get app data directory
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("Failed to get app data directory");
 
-            // Initialize database
-            let db =
-                Database::new(app_data_dir.clone()).expect("Failed to initialize database");
+            let db = Database::new(app_data_dir.clone()).expect("Failed to initialize database");
             app.manage(db);
 
-            // Initialize settings
             let settings_manager = SettingsManager::new(app_data_dir);
             let settings = settings_manager.get();
             app.manage(settings_manager);
 
-            // Initialize hotkey manager
+            // Panel hotkey (default Cmd+Shift+V): opens history with cycling.
             let hotkey_manager = HotkeyManager::new();
-            let _ = hotkey_manager.register(&app.handle(), &settings.hotkey);
+            match hotkey_manager.register(&app.handle(), &settings.hotkey) {
+                Ok(_) => log::info!("[hotkey] panel shortcut registered: {}", settings.hotkey),
+                Err(e) => log::error!("[hotkey] panel shortcut FAILED ({}): {}", settings.hotkey, e),
+            }
             app.manage(hotkey_manager);
 
-            // Initialize clipboard monitor
+            // Plain Cmd+V interception (silent paste of latest history item).
+            let paste_hotkey_manager = PasteHotkeyManager::new();
+            if settings.intercept_paste {
+                #[cfg(target_os = "macos")]
+                let paste_key = "Command+V";
+                #[cfg(not(target_os = "macos"))]
+                let paste_key = "Control+V";
+                match paste_hotkey_manager.register(&app.handle(), paste_key) {
+                    Ok(_) => log::info!("[hotkey] paste interceptor registered: {}", paste_key),
+                    Err(e) => log::error!("[hotkey] paste interceptor FAILED: {}", e),
+                }
+            }
+            app.manage(paste_hotkey_manager);
+
             let clipboard_monitor = ClipboardMonitor::new();
             if let Some(db) = app.try_state::<Database>() {
                 clipboard_monitor.init_last_hash(&db);
             }
             app.manage(clipboard_monitor);
 
-            // Initialize previous app state tracker (for restoring focus after hiding)
             #[cfg(target_os = "macos")]
             app.manage(PreviousAppState::new());
-
-            // Initialize panel hide guard (prevents re-entrant order_out)
             #[cfg(target_os = "macos")]
             app.manage(PanelHideGuard::new());
-
-            // Initialize hotkey mode state (for preventing auto-hide while modifiers held)
             app.manage(HotkeyModeState::new());
-
-            // Initialize selected item state (for hotkey mode paste on modifier release)
             app.manage(SelectedItemState::new());
+            app.manage(SettingsOpenState::new());
 
-            // Start modifier key polling for hotkey mode paste-on-release (macOS)
+            // Native clipboard poller — runs regardless of webview state.
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    log::info!("[clipboard-poll] thread started");
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            use objc::{class, msg_send, sel, sel_impl};
+                            use cocoa::base::id;
+                            unsafe {
+                                let pool: id = msg_send![class!(NSAutoreleasePool), new];
+                                let _ = clipboard::capture_clipboard(&app_handle);
+                                let _: () = msg_send![pool, drain];
+                            }
+                        }
+
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let _ = clipboard::capture_clipboard(&app_handle);
+                        }
+                    }
+                });
+            }
+
+            // Modifier-release watcher for hotkey-mode paste-on-release (macOS).
             #[cfg(target_os = "macos")]
             {
                 let app_handle = app.handle().clone();
@@ -101,11 +132,8 @@ pub fn run() {
                         fn CGEventSourceKeyState(stateID: u32, key: u16) -> bool;
                     }
 
-                    // kCGEventFlagMaskCommand and kCGEventFlagMaskShift
                     const MASK_COMMAND: u64 = 0x100000;
                     const MASK_SHIFT: u64 = 0x20000;
-
-                    // macOS virtual key codes
                     const VK_ESCAPE: u16 = 53;
                     const VK_V: u16 = 9;
 
@@ -113,139 +141,106 @@ pub fn run() {
                     let mut v_was_pressed = false;
 
                     loop {
-                        // Poll every 30ms - fast enough to feel instant
                         std::thread::sleep(std::time::Duration::from_millis(30));
 
-                        // Only check when hotkey mode is active
                         let is_active = app_handle
                             .try_state::<HotkeyModeState>()
                             .map_or(false, |s| s.is_active());
 
-                        // Unregister global shortcut when hotkey mode enters
-                        // so V keydown events aren't consumed by the shortcut system
                         if is_active && !was_active {
-                            v_was_pressed = true; // V is held from activation
-                            if let Some(hotkey_mgr) =
-                                app_handle.try_state::<HotkeyManager>()
-                            {
-                                let _ = hotkey_mgr.unregister(&app_handle);
+                            v_was_pressed = true;
+                            if let Some(m) = app_handle.try_state::<HotkeyManager>() {
+                                let _ = m.unregister(&app_handle);
+                            }
+                            if let Some(m) = app_handle.try_state::<PasteHotkeyManager>() {
+                                let _ = m.unregister(&app_handle);
                             }
                         }
 
-                        // Re-register global shortcut when hotkey mode exits
                         if !is_active && was_active {
                             v_was_pressed = false;
-                            if let Some(hotkey_mgr) =
-                                app_handle.try_state::<HotkeyManager>()
-                            {
-                                if let Some(settings_mgr) =
-                                    app_handle.try_state::<SettingsManager>()
-                                {
-                                    let hotkey = settings_mgr.get().hotkey.clone();
-                                    let _ = hotkey_mgr.register(&app_handle, &hotkey);
+                            if let Some(m) = app_handle.try_state::<HotkeyManager>() {
+                                if let Some(sm) = app_handle.try_state::<SettingsManager>() {
+                                    let s = sm.get();
+                                    let _ = m.register(&app_handle, &s.hotkey);
+                                    if s.intercept_paste {
+                                        if let Some(p) = app_handle.try_state::<PasteHotkeyManager>() {
+                                            let _ = p.register(&app_handle, "Command+V");
+                                        }
+                                    }
                                 }
                             }
                         }
                         was_active = is_active;
-
                         if !is_active {
                             continue;
                         }
 
-                        // Check ESC key - cancel hotkey mode without pasting
-                        // This works regardless of which modifiers are held
-                        let esc_pressed = unsafe {
-                            CGEventSourceKeyState(1, VK_ESCAPE)
-                        };
-
-                        // Also detect V key for cycling (edge-detect: only on new press)
-                        // Try both HID state (1) and combined session state (0)
+                        let esc_pressed = unsafe { CGEventSourceKeyState(1, VK_ESCAPE) };
                         let v_pressed = unsafe {
-                            CGEventSourceKeyState(1, VK_V)
-                            || CGEventSourceKeyState(0, VK_V)
+                            CGEventSourceKeyState(1, VK_V) || CGEventSourceKeyState(0, VK_V)
                         };
                         if v_pressed && !v_was_pressed {
                             let _ = app_handle.emit("hotkey-cycle", ());
                         }
                         v_was_pressed = v_pressed;
+
                         if esc_pressed {
-                            if let Some(hotkey_state) =
-                                app_handle.try_state::<HotkeyModeState>()
-                            {
-                                hotkey_state.exit();
+                            if let Some(s) = app_handle.try_state::<HotkeyModeState>() {
+                                s.exit();
                             }
-                            // Clear selected item to prevent paste
-                            if let Some(selected_state) =
-                                app_handle.try_state::<SelectedItemState>()
-                            {
-                                selected_state.take();
+                            if let Some(s) = app_handle.try_state::<SelectedItemState>() {
+                                s.take();
                             }
                             let app = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
-                                let _ = crate::window::hide_window(app).await;
+                                let _ = window::hide_window(app).await;
                             });
                             continue;
                         }
 
-                        // Query physical modifier key state from HID system
                         let (cmd_held, shift_held) = unsafe {
-                            // 1 = kCGEventSourceStateHIDSystemState (physical keys)
                             let flags = CGEventSourceFlagsState(1);
                             (flags & MASK_COMMAND != 0, flags & MASK_SHIFT != 0)
                         };
 
                         if !cmd_held && !shift_held {
-                            // Brief delay to allow ESC to cancel
+                            // Don't auto-dismiss while settings panel is open
+                            let settings_open = app_handle
+                                .try_state::<SettingsOpenState>()
+                                .map_or(false, |s| s.is_open());
+                            if settings_open {
+                                continue;
+                            }
+
                             std::thread::sleep(std::time::Duration::from_millis(50));
-
-                            // Check ESC one more time after grace period
-                            let esc_after = unsafe {
-                                CGEventSourceKeyState(1, VK_ESCAPE)
-                            };
-
-                            // All modifiers released - re-check after delay
-                            if let Some(hotkey_state) =
-                                app_handle.try_state::<HotkeyModeState>()
-                            {
-                                if hotkey_state.is_active() && !esc_after {
-                                    // Exit hotkey mode immediately to prevent re-entrance
-                                    hotkey_state.exit();
-
-                                    if let Some(selected_state) =
-                                        app_handle.try_state::<SelectedItemState>()
-                                    {
-                                        if let Some(item_id) = selected_state.take() {
+                            let esc_after = unsafe { CGEventSourceKeyState(1, VK_ESCAPE) };
+                            if let Some(state) = app_handle.try_state::<HotkeyModeState>() {
+                                if state.is_active() && !esc_after {
+                                    state.exit();
+                                    if let Some(sel) = app_handle.try_state::<SelectedItemState>() {
+                                        if let Some(item_id) = sel.take() {
                                             let app = app_handle.clone();
                                             tauri::async_runtime::spawn(async move {
-                                                if let Err(e) =
-                                                    crate::clipboard::do_paste_and_simulate(
-                                                        app, item_id,
-                                                    )
-                                                    .await
-                                                {
-                                                    log::warn!("Failed to paste on modifier release: {}", e);
+                                                if let Err(e) = clipboard::do_paste_and_simulate(app, item_id).await {
+                                                    log::warn!("paste on release failed: {}", e);
                                                 }
                                             });
                                         } else {
-                                            // No selected item, just hide
                                             let app = app_handle.clone();
                                             tauri::async_runtime::spawn(async move {
-                                                let _ =
-                                                    crate::window::hide_window(app).await;
+                                                let _ = window::hide_window(app).await;
                                             });
                                         }
                                     }
-                                } else if esc_after && hotkey_state.is_active() {
-                                    // ESC pressed during grace period - cancel
-                                    hotkey_state.exit();
-                                    if let Some(selected_state) =
-                                        app_handle.try_state::<SelectedItemState>()
-                                    {
-                                        selected_state.take();
+                                } else if esc_after && state.is_active() {
+                                    state.exit();
+                                    if let Some(sel) = app_handle.try_state::<SelectedItemState>() {
+                                        sel.take();
                                     }
                                     let app = app_handle.clone();
                                     tauri::async_runtime::spawn(async move {
-                                        let _ = crate::window::hide_window(app).await;
+                                        let _ = window::hide_window(app).await;
                                     });
                                 }
                             }
@@ -254,45 +249,31 @@ pub fn run() {
                 });
             }
 
-            // Setup window as NSPanel on macOS
+            // Convert main window to NSPanel + apply vibrancy.
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    // Convert to panel
                     if let Err(e) = window.to_yoink_panel() {
                         log::warn!("Failed to initialize panel: {:?}", e);
-                    } else {
-                        log::info!("NSPanel initialized successfully");
-
-                        // Apply vibrancy
-                        if let Err(e) = set_window_blur(&window, true) {
-                            log::warn!("Failed to apply vibrancy: {:?}", e);
-                        } else {
-                            log::info!("Vibrancy applied");
-                        }
+                    }
+                    if let Err(e) = set_window_blur(&window, true) {
+                        log::warn!("Failed to apply vibrancy: {:?}", e);
                     }
                 }
             }
 
-            // Setup system tray
             setup_tray(app)?;
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // Clipboard commands
             clipboard::check_clipboard,
             clipboard::get_clipboard_items,
-            clipboard::get_pinned_items,
             clipboard::delete_clipboard_item,
-            clipboard::pin_item,
-            clipboard::unpin_item,
             clipboard::clear_history,
             clipboard::paste_item,
             clipboard::paste_and_simulate,
-            clipboard::move_to_collection,
-            clipboard::set_expiration,
-            // Window commands
+            clipboard::get_image_base64,
             window::show_window,
             window::hide_window,
             window::toggle_window,
@@ -301,33 +282,19 @@ pub fn run() {
             window::exit_hotkey_mode,
             window::set_selected_item,
             window::is_hotkey_mode_active,
-            // Settings commands
+            window::set_settings_open,
+            window::are_modifiers_held,
             settings::get_settings,
             settings::update_settings,
             settings::set_hotkey,
             settings::set_theme,
-            settings::set_accent_color,
             settings::add_excluded_app,
             settings::remove_excluded_app,
-            settings::toggle_queue_mode,
-            // Hotkey commands
+            settings::toggle_excluded_type,
             hotkey::register_hotkey,
             hotkey::validate_hotkey,
-            // Exclusions commands
             exclusions::get_current_app,
             exclusions::check_app_excluded,
-            // Collections commands
-            collections::create_collection,
-            collections::get_collections,
-            collections::delete_collection,
-            collections::update_collection,
-            collections::create_tag,
-            collections::get_tags,
-            collections::add_tag_to_item,
-            collections::remove_tag_from_item,
-            collections::get_item_tags,
-            // QR code command
-            qrcode::generate_qr_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -336,19 +303,16 @@ pub fn run() {
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open_item = MenuItemBuilder::with_id("open", "Open Yoink").build(app)?;
     let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
-    let upgrade_item = MenuItemBuilder::with_id("upgrade", "Upgrade to Pro").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
     let menu = MenuBuilder::new(app)
         .item(&open_item)
         .separator()
         .item(&settings_item)
-        .item(&upgrade_item)
         .separator()
         .item(&quit_item)
         .build()?;
 
-    // Load tray icon from file
     let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
         .expect("Failed to load tray icon");
 
@@ -368,24 +332,13 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = window::show_window(app.clone()).await;
-                    // Small delay to ensure window is visible and webview is ready
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    // Use eval to directly trigger settings - more reliable for NSPanel
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.eval(
-                            "window.__openSettings && window.__openSettings()"
-                        );
+                        let _ = window.eval("window.__openSettings && window.__openSettings()");
                     }
                 });
             }
-            "upgrade" => {
-                #[allow(deprecated)]
-                let _ = tauri_plugin_shell::ShellExt::shell(app)
-                    .open("https://yoink.app/upgrade", None);
-            }
-            "quit" => {
-                app.exit(0);
-            }
+            "quit" => app.exit(0),
             _ => {}
         })
         .build(app)?;

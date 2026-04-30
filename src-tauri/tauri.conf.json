@@ -16,8 +16,8 @@
       {
         "label": "main",
         "title": "Yoink",
-        "width": 700,
-        "height": 500,
+        "width": 900,
+        "height": 520,
         "resizable": false,
         "decorations": false,
         "transparent": true,
