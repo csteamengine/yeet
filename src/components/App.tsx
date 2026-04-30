@@ -17,7 +17,7 @@ export default function App() {
 
   const { settings, loadSettings, applyTheme, openSettings } = useSettingsStore();
   const { isHotkeyMode, setupListeners: setupHotkeyModeListeners } = useHotkeyModeStore();
-  const showSearch = settings.sticky_mode || !isHotkeyMode;
+  const showSearch = settings.sticky_mode;
 
   useEffect(() => {
     loadSettings();

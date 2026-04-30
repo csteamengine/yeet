@@ -1,11 +1,13 @@
 import { useRef, useEffect } from 'react';
 import { useClipboardStore } from '@/stores/clipboardStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { ClipboardItem } from './ClipboardItem';
 
 export function ClipboardList() {
   const listRef = useRef<HTMLDivElement>(null);
-  const { items, selectedIndex, setSelectedIndex, pasteItem, isLoading } =
+  const { items, selectedIndex, setSelectedIndex, pasteItem, deleteItem, isLoading } =
     useClipboardStore();
+  const stickyMode = useSettingsStore((s) => s.settings.sticky_mode);
 
   useEffect(() => {
     const el = listRef.current?.children[selectedIndex] as HTMLElement | undefined;
@@ -37,8 +39,10 @@ export function ClipboardList() {
           item={item}
           index={index}
           isSelected={selectedIndex === index}
+          showNumbers={stickyMode}
           onSelect={() => setSelectedIndex(index)}
           onPaste={() => pasteItem(item.id)}
+          onDelete={() => deleteItem(item.id)}
         />
       ))}
     </div>

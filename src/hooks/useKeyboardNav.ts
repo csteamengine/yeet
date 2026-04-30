@@ -14,7 +14,7 @@ export function useKeyboardNav() {
     setSelectedIndex,
   } = useClipboardStore();
 
-  const { isSettingsOpen, closeSettings, openSettings } = useSettingsStore();
+  const { isSettingsOpen, closeSettings, openSettings, settings } = useSettingsStore();
   const { isHotkeyMode, exitHotkeyMode, cycleNext } = useHotkeyModeStore();
 
   const handleKeyDown = useCallback(
@@ -80,7 +80,8 @@ export function useKeyboardNav() {
         return;
       }
 
-      if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+      if (/^[1-9]$/.test(e.key) && settings.sticky_mode && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+        e.preventDefault();
         const index = parseInt(e.key) - 1;
         if (index < items.length) setSelectedIndex(index);
         return;
@@ -96,6 +97,7 @@ export function useKeyboardNav() {
       isSettingsOpen,
       closeSettings,
       openSettings,
+      settings,
       isHotkeyMode,
       exitHotkeyMode,
       cycleNext,
