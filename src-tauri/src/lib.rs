@@ -138,12 +138,8 @@ pub fn run() {
                     const MASK_SHIFT: u64 = 0x20000;
                     const VK_ESCAPE: u16 = 53;
                     const VK_RETURN: u16 = 36;
-                    const VK_DOWN_ARROW: u16 = 125;
-                    const VK_UP_ARROW: u16 = 126;
 
                     let mut prev_return = false;
-                    let mut prev_down = false;
-                    let mut prev_up = false;
 
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(30));
@@ -154,8 +150,6 @@ pub fn run() {
 
                         if !is_active {
                             prev_return = false;
-                            prev_down = false;
-                            prev_up = false;
                             continue;
                         }
 
@@ -173,8 +167,6 @@ pub fn run() {
                                 let _ = window::hide_window(app).await;
                             });
                             prev_return = false;
-                            prev_down = false;
-                            prev_up = false;
                             continue;
                         }
 
@@ -196,28 +188,9 @@ pub fn run() {
                                 }
                             }
                             prev_return = return_now;
-                            prev_down = false;
-                            prev_up = false;
                             continue;
                         }
                         prev_return = return_now;
-
-                        // Arrow keys — navigate the list via webview eval.
-                        let down_now = unsafe { CGEventSourceKeyState(1, VK_DOWN_ARROW) };
-                        if down_now && !prev_down {
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                let _ = window.eval("window.__cycleNext && window.__cycleNext()");
-                            }
-                        }
-                        prev_down = down_now;
-
-                        let up_now = unsafe { CGEventSourceKeyState(1, VK_UP_ARROW) };
-                        if up_now && !prev_up {
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                let _ = window.eval("window.__cyclePrev && window.__cyclePrev()");
-                            }
-                        }
-                        prev_up = up_now;
 
                         let (cmd_held, shift_held) = unsafe {
                             let flags = CGEventSourceFlagsState(1);
