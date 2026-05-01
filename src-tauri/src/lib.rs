@@ -28,7 +28,7 @@ use tauri::{
 };
 
 #[cfg(target_os = "macos")]
-use tauri::{ActivationPolicy, Emitter};
+use tauri::ActivationPolicy;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -138,8 +138,6 @@ pub fn run() {
                     const MASK_SHIFT: u64 = 0x20000;
                     const VK_ESCAPE: u16 = 53;
 
-                    let mut was_active = false;
-
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -147,7 +145,6 @@ pub fn run() {
                             .try_state::<HotkeyModeState>()
                             .map_or(false, |s| s.is_active());
 
-                        was_active = is_active;
                         if !is_active {
                             continue;
                         }
