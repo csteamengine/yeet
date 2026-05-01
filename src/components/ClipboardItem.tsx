@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { X } from 'lucide-react';
 import type { ClipboardItem as ClipboardItemType } from '@/stores/clipboardStore';
 
 interface ClipboardItemProps {
@@ -47,9 +48,7 @@ export function ClipboardItem({ item, index, isSelected, showNumbers, onSelect, 
         className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded text-[var(--text-tertiary)] hover:text-red-400 hover:bg-[rgba(255,255,255,0.08)] opacity-0 group-hover:opacity-100 transition-opacity"
         aria-label="Delete item"
       >
-        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-        </svg>
+        <X className="w-3 h-3" />
       </button>
     </div>
   );

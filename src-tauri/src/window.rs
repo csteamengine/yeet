@@ -344,6 +344,18 @@ pub fn set_window_blur<R: Runtime>(_window: &WebviewWindow<R>, _enabled: bool) -
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn fade_in_panel(panel: &ShareId<RawNSPanel>) {
+    use objc::{msg_send, sel, sel_impl};
+    unsafe {
+        let ns_panel: id = std::mem::transmute(panel.clone());
+        let _: () = msg_send![ns_panel, setAlphaValue: 0.0_f64];
+        panel.show();
+        let animator: id = msg_send![ns_panel, animator];
+        let _: () = msg_send![animator, setAlphaValue: 1.0_f64];
+    }
+}
+
 // Tauri commands
 
 #[tauri::command]
@@ -362,7 +374,7 @@ pub async fn show_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), Str
                 let _ = window.center_at_cursor_monitor();
             }
             app.run_on_main_thread(move || {
-                panel.show();
+                fade_in_panel(&panel);
             })
             .map_err(|e| e.to_string())?;
             let _ = app.emit("panel-shown", ());
@@ -470,7 +482,7 @@ pub async fn toggle_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), S
                 }
 
                 app.run_on_main_thread(move || {
-                    panel.show();
+                    fade_in_panel(&panel);
                 })
                 .map_err(|e| e.to_string())?;
                 let _ = app.emit("panel-shown", ());
