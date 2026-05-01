@@ -138,7 +138,7 @@ pub async fn validate_hotkey(hotkey: String) -> Result<bool, String> {
 }
 
 /// Paste-shortcut manager. Registers plain Cmd+V (or Ctrl+V on non-mac) as a
-/// global shortcut so we can silently paste the latest Yoink history item
+/// global shortcut so we can silently paste the latest Yeet history item
 /// in place of whatever currently sits on the system clipboard.
 ///
 /// Coordinates with itself: while the handler is running, the shortcut is

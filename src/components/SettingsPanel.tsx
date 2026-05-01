@@ -3,62 +3,45 @@ import { invoke } from '@tauri-apps/api/core';
 import clsx from 'clsx';
 import { useSettingsStore, type ContentType } from '@/stores/settingsStore';
 import { useClipboardStore } from '@/stores/clipboardStore';
+import { useAuthStore } from '@/stores/authStore';
 
 const TABS = [
   { id: 'general', label: 'General' },
   { id: 'exclusions', label: 'Exclusions' },
   { id: 'appearance', label: 'Appearance' },
+  { id: 'account', label: 'Account' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
 
 export function SettingsPanel() {
-  const { isSettingsOpen, closeSettings } = useSettingsStore();
   const [activeTab, setActiveTab] = useState<TabId>('general');
 
-  if (!isSettingsOpen) return null;
-
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="w-[640px] h-[520px] rounded-xl overflow-hidden bg-[#1c1c1e] shadow-xl flex flex-col border border-[rgba(255,255,255,0.1)]">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-color)]">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Settings</h2>
-          <button
-            onClick={closeSettings}
-            className="p-1.5 rounded-lg hover:bg-[var(--bg-secondary)] transition-colors"
-            aria-label="Close settings"
-          >
-            <svg className="w-5 h-5 text-[var(--text-secondary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+    <div className="flex w-full h-full">
+        <div className="w-36 border-r border-[var(--border-color)] py-2">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={clsx(
+                'w-full px-4 py-2 text-left text-sm transition-colors',
+                activeTab === tab.id
+                  ? 'bg-[rgba(99,102,241,0.15)] text-accent-400 font-medium'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
-        <div className="flex flex-1 overflow-hidden">
-          <div className="w-40 border-r border-[var(--border-color)] py-2">
-            {TABS.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={clsx(
-                  'w-full px-4 py-2 text-left text-sm transition-colors',
-                  activeTab === tab.id
-                    ? 'bg-accent-100 dark:bg-accent-900/30 text-accent-700 dark:text-accent-300 font-medium'
-                    : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex-1 p-6 overflow-auto">
-            {activeTab === 'general' && <GeneralTab />}
-            {activeTab === 'exclusions' && <ExclusionsTab />}
-            {activeTab === 'appearance' && <AppearanceTab />}
-          </div>
+        <div className="flex-1 p-6 overflow-auto">
+          {activeTab === 'general' && <GeneralTab />}
+          {activeTab === 'exclusions' && <ExclusionsTab />}
+          {activeTab === 'appearance' && <AppearanceTab />}
+          {activeTab === 'account' && <AccountTab />}
         </div>
-      </div>
     </div>
   );
 }
@@ -72,7 +55,7 @@ function GeneralTab() {
 
   return (
     <div className="space-y-6">
-      <Row label="Panel hotkey" description="Opens Yoink and lets you cycle with V">
+      <Row label="Panel hotkey" description="Opens Yeet and lets you cycle with V">
         <div className="flex items-center gap-2">
           <input
             type="text"
@@ -317,6 +300,200 @@ function AppearanceTab() {
           <option value={18}>18px</option>
         </select>
       </Row>
+    </div>
+  );
+}
+
+interface UpdateInfo {
+  available: boolean;
+  current_version: string;
+  latest_version: string | null;
+  download_url: string | null;
+  release_notes: string | null;
+}
+
+function AccountTab() {
+  const { status, user, userCode, verificationUri, error, checkAuth, startDeviceFlow, cancelFlow, logout } = useAuthStore();
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'downloading'>('idle');
+
+  useEffect(() => {
+    checkAuth();
+    handleCheckUpdates();
+  }, []);
+
+  const handleCheckUpdates = async () => {
+    setUpdateStatus('checking');
+    try {
+      const info = await invoke<UpdateInfo>('check_for_updates');
+      setUpdateInfo(info);
+    } catch (e) {
+      console.error('[update] check failed:', e);
+    }
+    setUpdateStatus('idle');
+  };
+
+  const handleDownload = async () => {
+    if (!updateInfo?.download_url) return;
+    setUpdateStatus('downloading');
+    try {
+      await invoke('download_and_install_update', { downloadUrl: updateInfo.download_url });
+    } catch (e) {
+      console.error('[update] download failed:', e);
+    }
+    setUpdateStatus('idle');
+  };
+
+  if (status === 'authenticated' && user) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-4 p-4 rounded-lg bg-[var(--bg-secondary)]">
+          <img
+            src={user.avatar_url}
+            alt={user.login}
+            className="w-12 h-12 rounded-full"
+          />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-[var(--text-primary)]">
+              {user.name || user.login}
+            </p>
+            <p className="text-xs text-[var(--text-secondary)]">@{user.login}</p>
+          </div>
+          <button
+            onClick={logout}
+            className="px-3 py-1.5 rounded-lg text-sm text-red-500 border border-red-500/30 hover:bg-red-500/10"
+          >
+            Sign out
+          </button>
+        </div>
+
+        <UpdateSection
+          updateInfo={updateInfo}
+          updateStatus={updateStatus}
+          onCheck={handleCheckUpdates}
+          onDownload={handleDownload}
+        />
+      </div>
+    );
+  }
+
+  if (status === 'polling' && userCode) {
+    return (
+      <div className="space-y-6">
+        <div className="p-4 rounded-lg bg-[var(--bg-secondary)] text-center space-y-4">
+          <p className="text-sm text-[var(--text-secondary)]">
+            Enter this code on GitHub:
+          </p>
+          <p className="text-3xl font-mono font-bold tracking-widest text-[var(--text-primary)]">
+            {userCode}
+          </p>
+          {verificationUri && (
+            <button
+              onClick={() => invoke('github_open_url', { url: verificationUri })}
+              className="px-4 py-2 rounded-lg bg-accent-500 text-white text-sm hover:bg-accent-600"
+            >
+              Open GitHub
+            </button>
+          )}
+          <p className="text-xs text-[var(--text-tertiary)]">
+            Waiting for authorization...
+          </p>
+        </div>
+        <button
+          onClick={cancelFlow}
+          className="w-full px-3 py-1.5 rounded-lg text-sm text-[var(--text-secondary)] border border-[var(--border-color)] hover:bg-[var(--bg-secondary)]"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1">GitHub</h3>
+        <p className="text-xs text-[var(--text-secondary)] mb-4">
+          Sign in with GitHub to enable updates from private or org repos.
+        </p>
+      </div>
+
+      {error && (
+        <p className="text-xs text-red-500">{error}</p>
+      )}
+
+      <button
+        onClick={() => startDeviceFlow()}
+        disabled={status === 'awaiting_code'}
+        className="w-full px-4 py-2.5 rounded-lg text-sm font-medium transition-colors bg-[#24292f] text-white hover:bg-[#32383f]"
+      >
+        {status === 'awaiting_code' ? 'Starting...' : 'Sign in with GitHub'}
+      </button>
+
+      <UpdateSection
+        updateInfo={updateInfo}
+        updateStatus={updateStatus}
+        onCheck={handleCheckUpdates}
+        onDownload={handleDownload}
+      />
+    </div>
+  );
+}
+
+function UpdateSection({
+  updateInfo,
+  updateStatus,
+  onCheck,
+  onDownload,
+}: {
+  updateInfo: UpdateInfo | null;
+  updateStatus: 'idle' | 'checking' | 'downloading';
+  onCheck: () => void;
+  onDownload: () => void;
+}) {
+  return (
+    <div className="p-4 rounded-lg bg-[var(--bg-secondary)] space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-[var(--text-primary)]">Updates</h3>
+        <button
+          onClick={onCheck}
+          disabled={updateStatus === 'checking'}
+          className="text-xs text-accent-400 hover:text-accent-300 disabled:opacity-50"
+        >
+          {updateStatus === 'checking' ? 'Checking...' : 'Check now'}
+        </button>
+      </div>
+
+      {updateInfo && (
+        <div className="space-y-2">
+          <p className="text-xs text-[var(--text-secondary)]">
+            Current version: {updateInfo.current_version}
+          </p>
+          {updateInfo.available && updateInfo.latest_version ? (
+            <>
+              <p className="text-xs text-green-400">
+                Update available: v{updateInfo.latest_version}
+              </p>
+              {updateInfo.release_notes && (
+                <p className="text-xs text-[var(--text-tertiary)] line-clamp-3">
+                  {updateInfo.release_notes}
+                </p>
+              )}
+              {updateInfo.download_url && (
+                <button
+                  onClick={onDownload}
+                  disabled={updateStatus === 'downloading'}
+                  className="px-3 py-1.5 rounded-lg bg-accent-500 text-white text-sm hover:bg-accent-600 disabled:opacity-50"
+                >
+                  {updateStatus === 'downloading' ? 'Downloading...' : 'Download & Install'}
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-[var(--text-tertiary)]">You're up to date.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

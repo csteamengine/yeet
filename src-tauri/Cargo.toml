@@ -1,16 +1,16 @@
 [package]
-name = "yoink"
+name = "yeet"
 version = "0.0.0"
 description = "A clipboard manager"
 authors = ["Charlie"]
 edition = "2021"
 
 [lib]
-name = "yoink_lib"
+name = "yeet_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [[bin]]
-name = "yoink"
+name = "yeet"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -36,6 +36,8 @@ qrcode = "0.14"
 log = "0.4"
 thiserror = "1"
 rdev = "0.5"
+reqwest = { version = "0.12", features = ["json"] }
+open = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }

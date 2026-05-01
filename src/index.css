@@ -28,6 +28,19 @@
 }
 
 
+html.light {
+  color-scheme: light;
+
+  --bg-primary: rgba(245, 245, 247, 0.85);
+  --bg-secondary: rgba(0, 0, 0, 0.04);
+  --bg-tertiary: rgba(0, 0, 0, 0.08);
+  --text-primary: #1c1c1e;
+  --text-secondary: rgba(0, 0, 0, 0.55);
+  --text-tertiary: rgba(0, 0, 0, 0.35);
+  --border-color: rgba(0, 0, 0, 0.08);
+  --shadow-color: rgba(0, 0, 0, 0.1);
+}
+
 * {
   margin: 0;
   padding: 0;

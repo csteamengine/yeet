@@ -15,7 +15,7 @@ export function useKeyboardNav() {
   } = useClipboardStore();
 
   const { isSettingsOpen, closeSettings, openSettings, settings } = useSettingsStore();
-  const { isHotkeyMode, exitHotkeyMode, cycleNext } = useHotkeyModeStore();
+  const { exitHotkeyMode, cycleNext } = useHotkeyModeStore();
 
   const handleKeyDown = useCallback(
     async (e: KeyboardEvent) => {
@@ -30,7 +30,7 @@ export function useKeyboardNav() {
           closeSettings();
           return;
         }
-        if (isHotkeyMode) {
+        if (useHotkeyModeStore.getState().isHotkeyMode) {
           exitHotkeyMode();
           invoke('exit_hotkey_mode');
         }
@@ -55,14 +55,14 @@ export function useKeyboardNav() {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         selectNext();
-        if (isHotkeyMode) syncSelectionToBackend();
+        syncSelectionToBackend();
         return;
       }
 
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         selectPrevious();
-        if (isHotkeyMode) syncSelectionToBackend();
+        syncSelectionToBackend();
         return;
       }
 
@@ -98,7 +98,6 @@ export function useKeyboardNav() {
       closeSettings,
       openSettings,
       settings,
-      isHotkeyMode,
       exitHotkeyMode,
       cycleNext,
     ]
@@ -113,5 +112,8 @@ export function useKeyboardNav() {
 function syncSelectionToBackend() {
   const state = useClipboardStore.getState();
   const item = state.items[state.selectedIndex];
-  if (item) invoke('set_selected_item', { id: item.id });
+  if (item) {
+    console.log('[nav] syncing selection to backend:', item.id, 'index:', state.selectedIndex);
+    invoke('set_selected_item', { id: item.id });
+  }
 }

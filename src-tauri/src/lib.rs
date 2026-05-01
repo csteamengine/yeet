@@ -1,6 +1,7 @@
 mod clipboard;
 mod database;
 mod exclusions;
+mod github_auth;
 mod hotkey;
 mod keyboard;
 mod settings;
@@ -55,7 +56,7 @@ pub fn run() {
             let db = Database::new(app_data_dir.clone()).expect("Failed to initialize database");
             app.manage(db);
 
-            let settings_manager = SettingsManager::new(app_data_dir);
+            let settings_manager = SettingsManager::new(app_data_dir.clone());
             let settings = settings_manager.get();
             app.manage(settings_manager);
 
@@ -94,6 +95,7 @@ pub fn run() {
             app.manage(HotkeyModeState::new());
             app.manage(SelectedItemState::new());
             app.manage(SettingsOpenState::new());
+            app.manage(github_auth::GitHubAuthState::new(app_data_dir.clone()));
 
             // Native clipboard poller — runs regardless of webview state.
             {
@@ -220,6 +222,7 @@ pub fn run() {
                                     state.exit();
                                     if let Some(sel) = app_handle.try_state::<SelectedItemState>() {
                                         if let Some(item_id) = sel.take() {
+                                            log::info!("[modifier-release] pasting item: {}", item_id);
                                             let app = app_handle.clone();
                                             tauri::async_runtime::spawn(async move {
                                                 if let Err(e) = clipboard::do_paste_and_simulate(app, item_id).await {
@@ -253,7 +256,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    if let Err(e) = window.to_yoink_panel() {
+                    if let Err(e) = window.to_yeet_panel() {
                         log::warn!("Failed to initialize panel: {:?}", e);
                     }
                     if let Err(e) = set_window_blur(&window, true) {
@@ -295,13 +298,22 @@ pub fn run() {
             hotkey::validate_hotkey,
             exclusions::get_current_app,
             exclusions::check_app_excluded,
+            github_auth::github_open_url,
+            github_auth::github_start_device_flow,
+            github_auth::github_poll_token,
+            github_auth::github_cancel_polling,
+            github_auth::github_get_token,
+            github_auth::github_get_user,
+            github_auth::github_logout,
+            github_auth::check_for_updates,
+            github_auth::download_and_install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let open_item = MenuItemBuilder::with_id("open", "Open Yoink").build(app)?;
+    let open_item = MenuItemBuilder::with_id("open", "Open Yeet").build(app)?;
     let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 

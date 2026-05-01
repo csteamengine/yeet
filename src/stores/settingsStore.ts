@@ -156,11 +156,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   applyTheme: () => {
-    const { theme } = get().settings;
+    const { theme, font_size } = get().settings;
     const root = document.documentElement;
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
     root.classList.toggle('dark', isDark);
+    root.classList.toggle('light', !isDark);
+    root.style.fontSize = `${font_size}px`;
   },
 
   setupListeners: async () => {

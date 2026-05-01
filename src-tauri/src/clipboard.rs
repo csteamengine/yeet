@@ -11,7 +11,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use uuid::Uuid;
 
 #[cfg(target_os = "macos")]
-const YOINK_BUNDLE_ID: &str = "com.yoink.app";
+const YEET_BUNDLE_ID: &str = "com.yeet.app";
 
 /// Cached state of the last seen clipboard so the poll loop can dedup.
 pub struct ClipboardMonitor {
@@ -42,7 +42,7 @@ pub enum PasteContent {
     Text(String),
     Url(String),
     Files(Vec<String>),
-    Image { hash: String, data: Vec<u8> },
+    Image { hash: String, data: Vec<u8>, source_name: Option<String> },
 }
 
 impl PasteContent {
@@ -101,7 +101,7 @@ pub fn pasteboard_has_type(type_str: &str) -> bool {
     }
 }
 
-/// Read the current clipboard via NSPasteboard. Prefers files → urls → text → image.
+/// Read the current clipboard via NSPasteboard. Prefers image → files → urls → text.
 #[cfg(target_os = "macos")]
 pub fn read_pasteboard() -> Option<PasteContent> {
     use cocoa::base::{id, nil};
@@ -129,6 +129,43 @@ pub fn read_pasteboard() -> Option<PasteContent> {
             CStr::from_ptr(c).to_str().ok().map(|s| s.to_string())
         };
 
+        // Image types — check first so screenshot tools (CleanShot X, etc.)
+        // that provide both image data and a file path are captured as images.
+        for img_type in &["public.png", "public.tiff", "public.jpeg"] {
+            let ns_type: id = NSString::alloc(nil).init_str(img_type);
+            let data: id = msg_send![pb, dataForType: ns_type];
+            if !data.is_null() {
+                let len: usize = msg_send![data, length];
+                let bytes: *const u8 = msg_send![data, bytes];
+                let slice = std::slice::from_raw_parts(bytes, len);
+                let mut hasher = Sha256::new();
+                hasher.update(slice);
+                let hash = format!("{:x}", hasher.finalize());
+
+                // Try to grab the original filename if a file path is also present.
+                let source_name = {
+                    let ft: id = NSString::alloc(nil).init_str("NSFilenamesPboardType");
+                    let arr: id = msg_send![pb, propertyListForType: ft];
+                    if !arr.is_null() {
+                        let count: usize = msg_send![arr, count];
+                        if count > 0 {
+                            let p: id = msg_send![arr, objectAtIndex: 0usize];
+                            if !p.is_null() {
+                                let c: *const c_char = msg_send![p, UTF8String];
+                                if !c.is_null() {
+                                    CStr::from_ptr(c).to_str().ok().map(|s| {
+                                        s.rsplit('/').next().unwrap_or(s).to_string()
+                                    })
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                };
+
+                return Some(PasteContent::Image { hash, data: slice.to_vec(), source_name });
+            }
+        }
+
         // Files (NSFilenamesPboardType -> property list of paths)
         {
             let ns_type: id = NSString::alloc(nil).init_str("NSFilenamesPboardType");
@@ -154,22 +191,6 @@ pub fn read_pasteboard() -> Option<PasteContent> {
                         return Some(PasteContent::Files(paths));
                     }
                 }
-            }
-        }
-
-        // Image types — check before URL/text so "Copy Image" from browsers
-        // is captured as an image rather than the accompanying source URL.
-        for img_type in &["public.png", "public.tiff", "public.jpeg"] {
-            let ns_type: id = NSString::alloc(nil).init_str(img_type);
-            let data: id = msg_send![pb, dataForType: ns_type];
-            if !data.is_null() {
-                let len: usize = msg_send![data, length];
-                let bytes: *const u8 = msg_send![data, bytes];
-                let slice = std::slice::from_raw_parts(bytes, len);
-                let mut hasher = Sha256::new();
-                hasher.update(slice);
-                let hash = format!("{:x}", hasher.finalize());
-                return Some(PasteContent::Image { hash, data: slice.to_vec() });
             }
         }
 
@@ -243,7 +264,7 @@ fn create_text_preview(text: &str) -> String {
 }
 
 /// Core capture: read the pasteboard, dedupe by content hash, gate on
-/// excluded_apps / excluded_types / Yoink-frontmost, and insert a new item.
+/// excluded_apps / excluded_types / Yeet-frontmost, and insert a new item.
 pub fn capture_clipboard<R: Runtime>(app: &AppHandle<R>) -> Result<Option<ClipboardItem>, String> {
     let monitor = app
         .try_state::<ClipboardMonitor>()
@@ -284,11 +305,11 @@ pub fn capture_clipboard<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Clipbo
 
     let content_type = content.type_tag().to_string();
 
-    // Frontmost-app gating: skip if Yoink is frontmost or app is excluded.
+    // Frontmost-app gating: skip if Yeet is frontmost or app is excluded.
     // Don't update last_hash here so the item gets captured once the app is no longer frontmost.
     if let Some(frontmost) = exclusions::get_frontmost_app() {
         #[cfg(target_os = "macos")]
-        if frontmost.eq_ignore_ascii_case(YOINK_BUNDLE_ID) {
+        if frontmost.eq_ignore_ascii_case(YEET_BUNDLE_ID) {
             return Ok(None);
         }
         if let Some(mgr) = app.try_state::<SettingsManager>() {
@@ -313,14 +334,15 @@ pub fn capture_clipboard<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Clipbo
 
     // For images, save the data to disk and use the file path as content.
     let (final_content, preview) = match &content {
-        PasteContent::Image { hash: img_hash, data } => {
+        PasteContent::Image { hash: img_hash, data, source_name } => {
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .map_err(|e| e.to_string())?;
             let path = save_image_to_disk(&app_data_dir, img_hash, data)
                 .unwrap_or_else(|| raw.clone());
-            (path, "[image]".to_string())
+            let preview = source_name.clone().unwrap_or_else(|| "[image]".to_string());
+            (path, preview)
         }
         PasteContent::Text(t) => (raw.clone(), create_text_preview(t)),
         PasteContent::Url(u) => (raw.clone(), create_text_preview(u)),
@@ -445,8 +467,9 @@ pub async fn get_image_base64<R: Runtime>(
 /// Write `id`'s content to the clipboard, hide the panel, restore focus, and
 /// simulate Cmd+V — used when the user picks an item from the panel.
 pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
-    if let Some(state) = app.try_state::<crate::window::HotkeyModeState>() {
-        state.exit();
+    // Consume selected item so the modifier-release watcher won't double-paste.
+    if let Some(sel) = app.try_state::<crate::window::SelectedItemState>() {
+        sel.take();
     }
 
     let item = {
@@ -460,8 +483,17 @@ pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) ->
         } else {
             write_to_clipboard_and_remember(&app, &item.content)?;
         }
+
+        // Unregister the Cmd+V interceptor BEFORE simulating so our keystroke
+        // goes straight to the target app instead of being caught by
+        // paste_latest_silent (which would always grab item 0).
+        if let Some(mgr) = app.try_state::<crate::hotkey::PasteHotkeyManager>() {
+            let _ = mgr.unregister(&app);
+        }
+
         crate::window::hide_window(app.clone()).await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+
         #[cfg(target_os = "macos")]
         app.run_on_main_thread(|| {
             if let Err(e) = keyboard::simulate_cmd_v() {
@@ -469,7 +501,27 @@ pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) ->
             }
         })
         .map_err(|e| e.to_string())?;
+
+        // Re-register after the keystroke has flushed.
+        tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
+        if let Some(mgr) = app.try_state::<crate::hotkey::PasteHotkeyManager>() {
+            if let Some(sm) = app.try_state::<crate::settings::SettingsManager>() {
+                if sm.get().intercept_paste {
+                    #[cfg(target_os = "macos")]
+                    let _ = mgr.register(&app, "Command+V");
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = mgr.register(&app, "Control+V");
+                }
+            }
+        }
     }
+
+    // Exit hotkey mode AFTER the paste completes so the modifier-release
+    // watcher can't re-register the interceptor mid-flight.
+    if let Some(state) = app.try_state::<crate::window::HotkeyModeState>() {
+        state.exit();
+    }
+
     Ok(())
 }
 
@@ -508,13 +560,17 @@ pub async fn paste_latest_silent<R: Runtime>(app: AppHandle<R>) -> Result<(), St
     // If the clipboard already holds something different from our latest
     // history item, another app (e.g. hearye dictation) just wrote to it.
     // Let the paste go through unmodified so their content reaches the
-    // target app instead of being overwritten by Yoink.
+    // target app instead of being overwritten by Yeet.
     let clipboard_changed = read_pasteboard()
         .map(|c| compute_hash(&c.raw_content()) != item.hash)
         .unwrap_or(false);
 
     if !clipboard_changed {
-        write_to_clipboard_and_remember(&app, &item.content)?;
+        if item.content_type == "image" {
+            write_image_to_clipboard_and_remember(&app, &item.content)?;
+        } else {
+            write_to_clipboard_and_remember(&app, &item.content)?;
+        }
     } else {
         log::info!("[paste] clipboard differs from latest item, passing through");
     }

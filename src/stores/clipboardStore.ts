@@ -78,8 +78,10 @@ export const useClipboardStore = create<ClipboardState>((set, get) => ({
 
   pasteSelected: async () => {
     const { items, selectedIndex } = get();
-    if (items[selectedIndex]) {
-      await get().pasteItem(items[selectedIndex].id);
+    const item = items[selectedIndex];
+    if (item) {
+      console.log('[paste] pasteSelected index:', selectedIndex, 'id:', item.id, 'preview:', item.preview.slice(0, 40));
+      await get().pasteItem(item.id);
     }
   },
 

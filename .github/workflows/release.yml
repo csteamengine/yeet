@@ -1,0 +1,79 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          VERSION="0.1.${COMMIT_COUNT}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version in config files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Update tauri.conf.json
+          sed -i '' "s/\"version\": \"0.0.0\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
+          # Update package.json
+          sed -i '' "s/\"version\": \"0.0.0\"/\"version\": \"${VERSION}\"/" package.json
+          # Update Cargo.toml
+          sed -i '' "s/^version = \"0.0.0\"/version = \"${VERSION}\"/" src-tauri/Cargo.toml
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Tauri app (universal binary)
+        run: pnpm tauri build --target universal-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Locate DMG
+        id: dmg
+        run: |
+          DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle -name '*.dmg' | head -1)
+          NAME="Yeet_${{ steps.version.outputs.version }}_universal.dmg"
+          cp "$DMG" "$NAME"
+          echo "path=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Yeet ${{ steps.version.outputs.version }}
+          body: |
+            Automated release from commit ${{ github.sha }}.
+          files: ${{ steps.dmg.outputs.path }}
+          generate_release_notes: true

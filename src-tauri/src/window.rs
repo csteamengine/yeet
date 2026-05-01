@@ -165,13 +165,13 @@ unsafe impl Sync for PreviousAppState {}
 
 #[cfg(target_os = "macos")]
 pub trait WebviewWindowExt {
-    fn to_yoink_panel(&self) -> tauri::Result<ShareId<RawNSPanel>>;
+    fn to_yeet_panel(&self) -> tauri::Result<ShareId<RawNSPanel>>;
     fn center_at_cursor_monitor(&self) -> Result<(), String>;
 }
 
 #[cfg(target_os = "macos")]
 impl<R: Runtime> WebviewWindowExt for WebviewWindow<R> {
-    fn to_yoink_panel(&self) -> tauri::Result<ShareId<RawNSPanel>> {
+    fn to_yeet_panel(&self) -> tauri::Result<ShareId<RawNSPanel>> {
         use cocoa::appkit::NSWindowCollectionBehavior;
 
         let panel = self.to_panel()?;
@@ -197,7 +197,7 @@ impl<R: Runtime> WebviewWindowExt for WebviewWindow<R> {
         panel.set_hides_on_deactivate(false);
 
         // Delegate — sticky panel, resignKey is a no-op.
-        let delegate = panel_delegate!(YoinkPanelDelegate {
+        let delegate = panel_delegate!(YeetPanelDelegate {
             window_did_resign_key
         });
         delegate.set_listener(Box::new(move |delegate_name: String| {

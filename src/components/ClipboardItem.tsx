@@ -12,13 +12,7 @@ interface ClipboardItemProps {
 }
 
 export function ClipboardItem({ item, index, isSelected, showNumbers, onSelect, onPaste, onDelete }: ClipboardItemProps) {
-  let preview: string;
-  if (item.content_type === 'image') {
-    const filename = item.content.split('/').pop() || 'image';
-    preview = filename;
-  } else {
-    preview = item.preview.length > 120 ? item.preview.slice(0, 120) + '...' : item.preview;
-  }
+  const preview = item.preview.length > 120 ? item.preview.slice(0, 120) + '...' : item.preview;
 
   return (
     <div
