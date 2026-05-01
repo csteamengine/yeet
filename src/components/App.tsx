@@ -8,6 +8,8 @@ import { useKeyboardNav } from '@/hooks/useKeyboardNav';
 import { useGlobalHotkey } from '@/hooks/useGlobalHotkey';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useHotkeyModeStore } from '@/stores/hotkeyModeStore';
+import { useClipboardStore } from '@/stores/clipboardStore';
+import { invoke } from '@tauri-apps/api/core';
 import clsx from 'clsx';
 
 export default function App() {
@@ -22,8 +24,17 @@ export default function App() {
   useEffect(() => {
     loadSettings();
 
-    // Tray menu calls window.__openSettings via webview eval; expose it.
+    // Expose functions for backend webview.eval() calls.
     (window as unknown as { __openSettings?: () => void }).__openSettings = openSettings;
+    (window as unknown as { __cycleNext?: () => void }).__cycleNext = () => {
+      const { selectNext } = useClipboardStore.getState();
+      selectNext();
+      const { items, selectedIndex } = useClipboardStore.getState();
+      const item = items[selectedIndex];
+      if (item) {
+        invoke('set_selected_item', { id: item.id });
+      }
+    };
 
     let cleanupHotkeyMode: (() => void) | undefined;
     setupHotkeyModeListeners().then((unsub) => {

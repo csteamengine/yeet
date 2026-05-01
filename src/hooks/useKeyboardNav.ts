@@ -113,7 +113,6 @@ function syncSelectionToBackend() {
   const state = useClipboardStore.getState();
   const item = state.items[state.selectedIndex];
   if (item) {
-    console.log('[nav] syncing selection to backend:', item.id, 'index:', state.selectedIndex);
     invoke('set_selected_item', { id: item.id });
   }
 }

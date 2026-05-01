@@ -52,7 +52,6 @@ export const useAuthStore = create<AuthState>((set, get) => {
     checkAuth: async () => {
       try {
         const user = await invoke<GitHubUser | null>('github_get_user');
-        console.log('[auth] checkAuth user:', user);
         if (user) {
           set({ status: 'authenticated', user, error: null });
         } else {
@@ -85,8 +84,6 @@ export const useAuthStore = create<AuthState>((set, get) => {
               'github_poll_token',
               { deviceCode: flow.device_code }
             );
-            console.log('[auth] poll result:', result);
-
             if (result.status === 'success') {
               stopPolling();
               await get().checkAuth();

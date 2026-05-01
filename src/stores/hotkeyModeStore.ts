@@ -20,7 +20,6 @@ export const useHotkeyModeStore = create<HotkeyModeState>((set, get) => ({
   isHotkeyMode: false,
 
   enterHotkeyMode: () => {
-    console.log('[HotkeyMode] Entering hotkey mode');
     set({ isHotkeyMode: true });
     // Sync current selected item to backend for modifier-release paste
     const { items, selectedIndex } = useClipboardStore.getState();
@@ -31,7 +30,6 @@ export const useHotkeyModeStore = create<HotkeyModeState>((set, get) => ({
   },
 
   exitHotkeyMode: () => {
-    console.log('[HotkeyMode] Exiting hotkey mode');
     set({ isHotkeyMode: false });
   },
 
@@ -45,7 +43,6 @@ export const useHotkeyModeStore = create<HotkeyModeState>((set, get) => ({
     const now = Date.now();
     if (now - lastCycleTime < 100) return;
     lastCycleTime = now;
-    console.log('[HotkeyMode] Cycling to next item');
     const { selectNext } = useClipboardStore.getState();
     selectNext();
     // Sync new selection to backend

@@ -80,7 +80,6 @@ export const useClipboardStore = create<ClipboardState>((set, get) => ({
     const { items, selectedIndex } = get();
     const item = items[selectedIndex];
     if (item) {
-      console.log('[paste] pasteSelected index:', selectedIndex, 'id:', item.id, 'preview:', item.preview.slice(0, 40));
       await get().pasteItem(item.id);
     }
   },
@@ -120,8 +119,7 @@ export const useClipboardStore = create<ClipboardState>((set, get) => ({
 
   setupListeners: async () => {
     const webview = getCurrentWebviewWindow();
-    const unlistenChanged = await webview.listen<ClipboardItem>('clipboard-changed', (event) => {
-      console.log('[clipboard] received clipboard-changed event', event.payload?.content_type);
+    const unlistenChanged = await webview.listen<ClipboardItem>('clipboard-changed', () => {
       get().loadItems();
     });
     const unlistenShown = await webview.listen('panel-shown', () => {

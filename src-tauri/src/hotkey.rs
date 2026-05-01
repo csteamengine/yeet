@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[cfg(target_os = "macos")]
@@ -29,75 +29,57 @@ impl HotkeyManager {
 
         app.global_shortcut()
             .on_shortcut(shortcut.clone(), move |_app, _shortcut, event| {
-                // Only handle key press, not key release
                 if event.state != ShortcutState::Pressed {
                     return;
                 }
 
                 let app = app_clone.clone();
+
+                let in_hotkey_mode = app
+                    .try_state::<HotkeyModeState>()
+                    .map_or(false, |s| s.is_active());
+
+                if in_hotkey_mode {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.eval("window.__cycleNext && window.__cycleNext()");
+                    }
+                    return;
+                }
+
+                let is_opening = {
+                    #[cfg(target_os = "macos")]
+                    {
+                        app.get_webview_panel(crate::window::MAIN_WINDOW_LABEL)
+                            .map_or(true, |p| !p.is_visible())
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        true
+                    }
+                };
+
+                let sticky = app
+                    .try_state::<SettingsManager>()
+                    .map_or(false, |m| m.get().sticky_mode);
+
+                if is_opening && !sticky {
+                    if let Some(hotkey_state) = app.try_state::<HotkeyModeState>() {
+                        hotkey_state.enter();
+                    }
+                    let first_item_id = app
+                        .try_state::<Database>()
+                        .and_then(|db| db.get_items(1, 0, None).ok())
+                        .and_then(|items| items.into_iter().next())
+                        .map(|item| item.id);
+                    if let Some(id) = first_item_id {
+                        if let Some(selected_state) = app.try_state::<SelectedItemState>() {
+                            selected_state.set(id);
+                        }
+                    }
+                    let _ = app.emit("hotkey-mode-started", ());
+                }
+
                 tauri::async_runtime::spawn(async move {
-                    // Check if we're already in hotkey mode (user cycling through items)
-                    let in_hotkey_mode = if let Some(hotkey_state) = app.try_state::<HotkeyModeState>() {
-                        hotkey_state.is_active()
-                    } else {
-                        false
-                    };
-
-                    if in_hotkey_mode {
-                        // While in hotkey mode, treat the shortcut as a cycle action.
-                        // This is a fallback for cases where the global shortcut isn't
-                        // unregistered quickly enough to let V keydown reach the webview.
-                        let _ = app.emit("hotkey-cycle", ());
-                        return;
-                    }
-
-                    // Check if window is currently hidden (opening mode)
-                    let is_opening = {
-                        #[cfg(target_os = "macos")]
-                        {
-                            if let Ok(panel) = app.get_webview_panel(crate::window::MAIN_WINDOW_LABEL) {
-                                !panel.is_visible()
-                            } else {
-                                true
-                            }
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            true
-                        }
-                    };
-
-                    // Enter hotkey mode and emit event BEFORE showing window
-                    // Only when opening (not when closing)
-                    // Skip hotkey mode if sticky_mode is enabled — the panel
-                    // stays open without modifier tracking.
-                    let sticky = app
-                        .try_state::<SettingsManager>()
-                        .map_or(false, |m| m.get().sticky_mode);
-
-                    if is_opening && !sticky {
-                        // Enter backend hotkey mode to prevent auto-hide while modifiers held
-                        if let Some(hotkey_state) = app.try_state::<HotkeyModeState>() {
-                            hotkey_state.enter();
-                        }
-                        // Set initial selected item to the most recent clipboard item
-                        let first_item_id = app
-                            .try_state::<Database>()
-                            .and_then(|db| db.get_items(1, 0, None).ok())
-                            .and_then(|items| items.into_iter().next())
-                            .map(|item| item.id);
-                        if let Some(id) = first_item_id {
-                            if let Some(selected_state) = app.try_state::<SelectedItemState>() {
-                                selected_state.set(id);
-                            }
-                        }
-                        let _ = app.emit("hotkey-mode-started", ());
-                        // Global shortcut will be unregistered by the polling thread
-                        // (on the is_active && !was_active transition) so V keydown
-                        // events reach the webview for cycling.
-                    }
-
-                    // Toggle window visibility
                     let _ = crate::window::toggle_window(app).await;
                 });
             })

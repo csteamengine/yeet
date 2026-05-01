@@ -137,10 +137,8 @@ pub fn run() {
                     const MASK_COMMAND: u64 = 0x100000;
                     const MASK_SHIFT: u64 = 0x20000;
                     const VK_ESCAPE: u16 = 53;
-                    const VK_V: u16 = 9;
 
                     let mut was_active = false;
-                    let mut v_was_pressed = false;
 
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(30));
@@ -149,43 +147,12 @@ pub fn run() {
                             .try_state::<HotkeyModeState>()
                             .map_or(false, |s| s.is_active());
 
-                        if is_active && !was_active {
-                            v_was_pressed = true;
-                            if let Some(m) = app_handle.try_state::<HotkeyManager>() {
-                                let _ = m.unregister(&app_handle);
-                            }
-                            if let Some(m) = app_handle.try_state::<PasteHotkeyManager>() {
-                                let _ = m.unregister(&app_handle);
-                            }
-                        }
-
-                        if !is_active && was_active {
-                            v_was_pressed = false;
-                            if let Some(m) = app_handle.try_state::<HotkeyManager>() {
-                                if let Some(sm) = app_handle.try_state::<SettingsManager>() {
-                                    let s = sm.get();
-                                    let _ = m.register(&app_handle, &s.hotkey);
-                                    if s.intercept_paste {
-                                        if let Some(p) = app_handle.try_state::<PasteHotkeyManager>() {
-                                            let _ = p.register(&app_handle, "Command+V");
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         was_active = is_active;
                         if !is_active {
                             continue;
                         }
 
                         let esc_pressed = unsafe { CGEventSourceKeyState(1, VK_ESCAPE) };
-                        let v_pressed = unsafe {
-                            CGEventSourceKeyState(1, VK_V) || CGEventSourceKeyState(0, VK_V)
-                        };
-                        if v_pressed && !v_was_pressed {
-                            let _ = app_handle.emit("hotkey-cycle", ());
-                        }
-                        v_was_pressed = v_pressed;
 
                         if esc_pressed {
                             if let Some(s) = app_handle.try_state::<HotkeyModeState>() {
