@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yeet - Clipboard Manager for macOS</title>
+  <meta name="description" content="A fast, native clipboard manager for macOS. Hotkey cycling, image support, smart search, and more." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0b;
+      --bg-card: #141416;
+      --border: rgba(255,255,255,0.08);
+      --text: #f0f0f2;
+      --text-secondary: #8b8b96;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Nav */
+    nav {
+      padding: 20px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    nav .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .nav-links { display: flex; gap: 24px; align-items: center; }
+    .nav-links a { color: var(--text-secondary); font-size: 14px; }
+    .nav-links a:hover { color: var(--text); }
+
+    /* Hero */
+    .hero {
+      padding: 100px 0 80px;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: clamp(40px, 6vw, 64px);
+      font-weight: 800;
+      letter-spacing: -2px;
+      line-height: 1.1;
+      margin-bottom: 20px;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p {
+      font-size: 18px;
+      color: var(--text-secondary);
+      max-width: 520px;
+      margin: 0 auto 40px;
+    }
+    .hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 28px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-primary:hover { background: var(--accent-hover); color: white; }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: rgba(255,255,255,0.2); }
+
+    .kbd {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid var(--border);
+      font-family: 'SF Mono', Menlo, monospace;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    /* Features */
+    .features {
+      padding: 80px 0;
+    }
+    .features-header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+    .features-header h2 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      margin-bottom: 12px;
+    }
+    .features-header p {
+      color: var(--text-secondary);
+      font-size: 16px;
+    }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .feature-card {
+      padding: 28px;
+      border-radius: 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      transition: border-color 0.2s;
+    }
+    .feature-card:hover { border-color: rgba(255,255,255,0.15); }
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: rgba(99,102,241,0.12);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      margin-bottom: 16px;
+    }
+    .feature-card h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    /* How it works */
+    .how {
+      padding: 80px 0;
+      border-top: 1px solid var(--border);
+    }
+    .how h2 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 32px;
+      text-align: center;
+    }
+    .step-number {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    .steps h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .steps p {
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    /* Footer */
+    footer {
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+    }
+    footer p {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    @media (max-width: 600px) {
+      .hero { padding: 60px 0 50px; }
+      .features, .how { padding: 50px 0; }
+      .hero-actions { flex-direction: column; align-items: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="container">
+      <div class="logo">Yeet</div>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="https://github.com/csteamengine/yoink" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="container">
+      <h1>Clipboard history,<br /><span>instantly.</span></h1>
+      <p>
+        A fast, native clipboard manager for macOS. Press a hotkey, cycle through your history, release to paste.
+      </p>
+      <div class="hero-actions">
+        <a href="https://github.com/csteamengine/yoink/releases" class="btn btn-primary">
+          Download for macOS
+        </a>
+        <a href="https://github.com/csteamengine/yoink" class="btn btn-secondary">
+          View source
+        </a>
+      </div>
+      <p style="margin-top: 24px;">
+        <kbd class="kbd">&#8984; Shift V</kbd> to open &middot; <kbd class="kbd">V</kbd> to cycle &middot; release to paste
+      </p>
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <div class="container">
+      <div class="features-header">
+        <h2>Everything you need, nothing you don't</h2>
+        <p>Built with Tauri and Rust for speed and a tiny footprint.</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">&#9889;</div>
+          <h3>Hotkey cycling</h3>
+          <p>Hold your modifier keys and tap V to cycle through recent clips. Release to paste instantly into the target app.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#128444;</div>
+          <h3>Image support</h3>
+          <p>Screenshots, area captures, copied images &mdash; all captured and pasted back as native image data, not file paths.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#128269;</div>
+          <h3>Smart search</h3>
+          <p>Fuzzy search across your entire clipboard history. Find that snippet you copied three days ago in seconds.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#128274;</div>
+          <h3>Privacy first</h3>
+          <p>Skips passwords, transient data, and concealed content automatically. Exclude specific apps from capture.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#127912;</div>
+          <h3>Native feel</h3>
+          <p>Vibrancy-backed NSPanel that feels like part of macOS. No Electron, no web browser &mdash; just a fast native panel.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#128736;</div>
+          <h3>Configurable</h3>
+          <p>Custom hotkeys, history limits, excluded apps and content types, sticky mode, paste interception &mdash; your workflow, your rules.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="how">
+    <div class="container">
+      <h2>How it works</h2>
+      <div class="steps">
+        <div>
+          <div class="step-number">1</div>
+          <h3>Copy anything</h3>
+          <p>Yeet watches your clipboard in the background &mdash; text, URLs, code, files, images.</p>
+        </div>
+        <div>
+          <div class="step-number">2</div>
+          <h3>Press your hotkey</h3>
+          <p>Hit <kbd class="kbd">&#8984;&#8679;V</kbd> to open the panel. Your history appears instantly.</p>
+        </div>
+        <div>
+          <div class="step-number">3</div>
+          <h3>Pick and paste</h3>
+          <p>Tap V to cycle, use arrow keys, or search. Release the modifiers to paste into the active app.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="container">
+      <p>Built by <a href="https://github.com/csteamengine">Charlie Steenhagen</a>. Open source on <a href="https://github.com/csteamengine/yoink">GitHub</a>.</p>
+    </div>
+  </footer>
+
+</body>
+</html>
