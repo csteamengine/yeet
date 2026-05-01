@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -140,11 +141,28 @@ pub async fn get_settings(manager: tauri::State<'_, SettingsManager>) -> Result<
 }
 
 #[tauri::command]
-pub async fn update_settings(
+pub async fn update_settings<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     manager: tauri::State<'_, SettingsManager>,
     settings: Settings,
 ) -> Result<(), String> {
-    manager.update(settings)
+    let old = manager.get();
+    manager.update(settings.clone())?;
+
+    if old.intercept_paste != settings.intercept_paste {
+        if let Some(mgr) = app.try_state::<crate::hotkey::PasteHotkeyManager>() {
+            if settings.intercept_paste {
+                #[cfg(target_os = "macos")]
+                let _ = mgr.register(&app, "Command+V");
+                #[cfg(not(target_os = "macos"))]
+                let _ = mgr.register(&app, "Control+V");
+            } else {
+                let _ = mgr.unregister(&app);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

@@ -351,6 +351,7 @@ fn fade_in_panel(panel: &ShareId<RawNSPanel>) {
         let ns_panel: id = std::mem::transmute(panel.clone());
         let _: () = msg_send![ns_panel, setAlphaValue: 0.0_f64];
         panel.show();
+        let _: () = msg_send![ns_panel, makeKeyWindow];
         let animator: id = msg_send![ns_panel, animator];
         let _: () = msg_send![animator, setAlphaValue: 1.0_f64];
     }

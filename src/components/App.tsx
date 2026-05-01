@@ -37,6 +37,15 @@ export default function App() {
         invoke('set_selected_item', { id: item.id });
       }
     };
+    (window as unknown as { __cyclePrev?: () => void }).__cyclePrev = () => {
+      const { selectPrevious } = useClipboardStore.getState();
+      selectPrevious();
+      const { items, selectedIndex } = useClipboardStore.getState();
+      const item = items[selectedIndex];
+      if (item) {
+        invoke('set_selected_item', { id: item.id });
+      }
+    };
 
     let cleanupHotkeyMode: (() => void) | undefined;
     setupHotkeyModeListeners().then((unsub) => {
