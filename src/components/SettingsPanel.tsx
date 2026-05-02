@@ -117,31 +117,51 @@ function HotkeyRecorder({ value, onRecord }: { value: string; onRecord: (shortcu
 
   return (
     <div className="flex items-center gap-2">
-      <button
-        ref={ref}
-        onClick={() => { setPending(null); setRecording(true); }}
-        className={clsx(
-          'px-3 py-1.5 rounded-lg w-48 text-left text-sm border transition-colors',
-          recording
-            ? 'bg-accent-500/10 border-accent-500 text-accent-400 animate-pulse'
-            : 'bg-[var(--bg-secondary)] text-[var(--text-primary)] border-[var(--border-color)] hover:border-accent-500/50'
+      <div className="flex items-stretch rounded-lg border border-[var(--border-color)] overflow-hidden">
+        {recording ? (
+          <button
+            ref={ref}
+            className="px-3 py-1.5 w-44 text-left text-sm bg-accent-500/10 text-accent-400 animate-pulse"
+          >
+            Press a shortcut…
+          </button>
+        ) : (
+          <span className="px-3 py-1.5 w-44 text-sm bg-[var(--bg-secondary)] text-[var(--text-primary)] flex items-center">
+            {displayValue || 'No hotkey set'}
+          </span>
         )}
-      >
-        {recording ? 'Press a shortcut…' : displayValue || 'Click to record'}
-      </button>
+        <button
+          onClick={() => {
+            if (recording) {
+              setRecording(false);
+            } else {
+              setPending(null);
+              setRecording(true);
+            }
+          }}
+          className={clsx(
+            'px-3 py-1.5 text-sm font-medium border-l border-[var(--border-color)] transition-colors',
+            recording
+              ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+              : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-accent-500/10 hover:text-accent-400'
+          )}
+        >
+          {recording ? 'Cancel' : 'Record'}
+        </button>
+      </div>
       {pending && !recording && (
         <>
           <button
             onClick={() => { onRecord(pending); setPending(null); }}
             className="px-3 py-1.5 rounded-lg bg-accent-500 text-white text-sm hover:bg-accent-600"
           >
-            Set
+            Save
           </button>
           <button
             onClick={() => setPending(null)}
-            className="px-3 py-1.5 rounded-lg text-sm text-[var(--text-secondary)] border border-[var(--border-color)] hover:bg-[var(--bg-secondary)]"
+            className="px-2 py-1.5 text-sm text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
           >
-            Cancel
+            Discard
           </button>
         </>
       )}
