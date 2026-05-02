@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import clsx from 'clsx';
 import { useSettingsStore, type ContentType } from '@/stores/settingsStore';
@@ -46,31 +46,117 @@ export function SettingsPanel() {
   );
 }
 
-function GeneralTab() {
-  const { settings, setHotkey, updateSettings } = useSettingsStore();
-  const { clearHistory } = useClipboardStore();
-  const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey);
+function keyEventToShortcut(e: KeyboardEvent): { display: string; shortcut: string } | null {
+  const isMac = navigator.platform.toUpperCase().includes('MAC');
 
-  useEffect(() => setHotkeyInput(settings.hotkey), [settings.hotkey]);
+  const modifiers: string[] = [];
+  if (e.metaKey) modifiers.push(isMac ? 'Command' : 'Super');
+  if (e.ctrlKey) modifiers.push(isMac ? 'Control' : 'Ctrl');
+  if (e.altKey) modifiers.push(isMac ? 'Option' : 'Alt');
+  if (e.shiftKey) modifiers.push('Shift');
+
+  if (modifiers.length === 0) return null;
+
+  const modifierKeys = new Set(['Meta', 'Control', 'Alt', 'Shift']);
+  if (modifierKeys.has(e.key)) return null;
+
+  const keyMap: Record<string, string> = {
+    ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down',
+    ArrowLeft: 'Left', ArrowRight: 'Right',
+    Backspace: 'Backspace', Delete: 'Delete', Enter: 'Enter',
+    Tab: 'Tab', Escape: 'Escape', Home: 'Home', End: 'End',
+    PageUp: 'PageUp', PageDown: 'PageDown',
+  };
+
+  let key = keyMap[e.key] || e.key.toUpperCase();
+  if (key.length === 1 && /[A-Z0-9]/.test(key)) { /* valid */ }
+  else if (key.startsWith('F') && /^F\d{1,2}$/.test(key)) { /* function key */ }
+  else if (keyMap[e.key]) { /* mapped key */ }
+  else return null;
+
+  const parts = [...modifiers, key];
+  return { display: parts.join('+'), shortcut: parts.join('+') };
+}
+
+function HotkeyRecorder({ value, onRecord }: { value: string; onRecord: (shortcut: string) => void }) {
+  const [recording, setRecording] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
+  const ref = useRef<HTMLButtonElement>(null);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const result = keyEventToShortcut(e);
+    if (result) {
+      setPending(result.shortcut);
+      setRecording(false);
+    }
+  }, []);
+
+  const handleBlur = useCallback(() => {
+    setRecording(false);
+  }, []);
+
+  useEffect(() => {
+    if (!recording) return;
+    const el = ref.current;
+    if (!el) return;
+    el.addEventListener('keydown', handleKeyDown);
+    el.addEventListener('blur', handleBlur);
+    return () => {
+      el.removeEventListener('keydown', handleKeyDown);
+      el.removeEventListener('blur', handleBlur);
+    };
+  }, [recording, handleKeyDown, handleBlur]);
+
+  useEffect(() => {
+    if (recording && ref.current) ref.current.focus();
+  }, [recording]);
+
+  const displayValue = pending ?? value;
 
   return (
-    <div className="space-y-6">
-      <Row label="Panel hotkey" description="Opens Yeet and lets you cycle with V">
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={hotkeyInput}
-            onChange={(e) => setHotkeyInput(e.target.value)}
-            className="px-3 py-1.5 rounded-lg w-48 bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--border-color)] focus:outline-none focus:ring-2 focus:ring-accent-500"
-            placeholder="Command+Shift+V"
-          />
+    <div className="flex items-center gap-2">
+      <button
+        ref={ref}
+        onClick={() => { setPending(null); setRecording(true); }}
+        className={clsx(
+          'px-3 py-1.5 rounded-lg w-48 text-left text-sm border transition-colors',
+          recording
+            ? 'bg-accent-500/10 border-accent-500 text-accent-400 animate-pulse'
+            : 'bg-[var(--bg-secondary)] text-[var(--text-primary)] border-[var(--border-color)] hover:border-accent-500/50'
+        )}
+      >
+        {recording ? 'Press a shortcut…' : displayValue || 'Click to record'}
+      </button>
+      {pending && !recording && (
+        <>
           <button
-            onClick={() => setHotkey(hotkeyInput)}
+            onClick={() => { onRecord(pending); setPending(null); }}
             className="px-3 py-1.5 rounded-lg bg-accent-500 text-white text-sm hover:bg-accent-600"
           >
             Set
           </button>
-        </div>
+          <button
+            onClick={() => setPending(null)}
+            className="px-3 py-1.5 rounded-lg text-sm text-[var(--text-secondary)] border border-[var(--border-color)] hover:bg-[var(--bg-secondary)]"
+          >
+            Cancel
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function GeneralTab() {
+  const { settings, setHotkey, updateSettings } = useSettingsStore();
+  const { clearHistory } = useClipboardStore();
+
+  return (
+    <div className="space-y-6">
+      <Row label="Panel hotkey" description="Opens Yeet and lets you cycle with V">
+        <HotkeyRecorder value={settings.hotkey} onRecord={setHotkey} />
       </Row>
 
       <Row
