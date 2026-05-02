@@ -9,7 +9,7 @@ mod window;
 
 use clipboard::ClipboardMonitor;
 use database::Database;
-use hotkey::{HotkeyManager, PasteHotkeyManager};
+use hotkey::HotkeyManager;
 use settings::SettingsManager;
 
 #[cfg(target_os = "macos")]
@@ -68,20 +68,6 @@ pub fn run() {
                 Err(e) => log::error!("[hotkey] panel shortcut FAILED ({}): {}", settings.hotkey, e),
             }
             app.manage(hotkey_manager);
-
-            // Plain Cmd+V interception (silent paste of latest history item).
-            let paste_hotkey_manager = PasteHotkeyManager::new();
-            if settings.intercept_paste {
-                #[cfg(target_os = "macos")]
-                let paste_key = "Command+V";
-                #[cfg(not(target_os = "macos"))]
-                let paste_key = "Control+V";
-                match paste_hotkey_manager.register(&app.handle(), paste_key) {
-                    Ok(_) => log::info!("[hotkey] paste interceptor registered: {}", paste_key),
-                    Err(e) => log::error!("[hotkey] paste interceptor FAILED: {}", e),
-                }
-            }
-            app.manage(paste_hotkey_manager);
 
             let clipboard_monitor = ClipboardMonitor::new();
             if let Some(db) = app.try_state::<Database>() {

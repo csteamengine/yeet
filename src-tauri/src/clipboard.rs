@@ -484,13 +484,6 @@ pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) ->
             write_to_clipboard_and_remember(&app, &item.content)?;
         }
 
-        // Unregister the Cmd+V interceptor BEFORE simulating so our keystroke
-        // goes straight to the target app instead of being caught by
-        // paste_latest_silent (which would always grab item 0).
-        if let Some(mgr) = app.try_state::<crate::hotkey::PasteHotkeyManager>() {
-            let _ = mgr.unregister(&app);
-        }
-
         crate::window::hide_window(app.clone()).await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
 
@@ -501,19 +494,6 @@ pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) ->
             }
         })
         .map_err(|e| e.to_string())?;
-
-        // Re-register after the keystroke has flushed.
-        tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
-        if let Some(mgr) = app.try_state::<crate::hotkey::PasteHotkeyManager>() {
-            if let Some(sm) = app.try_state::<crate::settings::SettingsManager>() {
-                if sm.get().intercept_paste {
-                    #[cfg(target_os = "macos")]
-                    let _ = mgr.register(&app, "Command+V");
-                    #[cfg(not(target_os = "macos"))]
-                    let _ = mgr.register(&app, "Control+V");
-                }
-            }
-        }
     }
 
     // Exit hotkey mode AFTER the paste completes so the modifier-release
@@ -534,57 +514,6 @@ pub async fn paste_and_simulate<R: Runtime>(
     do_paste_and_simulate(app, id).await
 }
 
-/// Cmd+V interception — silently paste the most recent history item with no
-/// window shown. Pre-records the hash so the background poller doesn't
-/// re-capture our own write.
-pub async fn paste_latest_silent<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let item = {
-        let db = app
-            .try_state::<Database>()
-            .ok_or_else(|| "Database not initialized".to_string())?;
-        db.get_items(1, 0, None)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .next()
-    };
-
-    let Some(item) = item else {
-        #[cfg(target_os = "macos")]
-        app.run_on_main_thread(|| {
-            let _ = keyboard::simulate_cmd_v();
-        })
-        .map_err(|e| e.to_string())?;
-        return Ok(());
-    };
-
-    // If the clipboard already holds something different from our latest
-    // history item, another app (e.g. hearye dictation) just wrote to it.
-    // Let the paste go through unmodified so their content reaches the
-    // target app instead of being overwritten by Yeet.
-    let clipboard_changed = read_pasteboard()
-        .map(|c| compute_hash(&c.raw_content()) != item.hash)
-        .unwrap_or(false);
-
-    if !clipboard_changed {
-        if item.content_type == "image" {
-            write_image_to_clipboard_and_remember(&app, &item.content)?;
-        } else {
-            write_to_clipboard_and_remember(&app, &item.content)?;
-        }
-    } else {
-        log::info!("[paste] clipboard differs from latest item, passing through");
-    }
-
-    #[cfg(target_os = "macos")]
-    app.run_on_main_thread(|| {
-        if let Err(e) = keyboard::simulate_cmd_v() {
-            log::warn!("simulate_cmd_v failed: {}", e);
-        }
-    })
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
 
 /// Write `text` to the clipboard and tell the monitor to ignore the resulting
 /// changeCount bump so we don't re-record what we just wrote.

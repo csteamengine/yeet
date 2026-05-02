@@ -189,16 +189,6 @@ function GeneralTab() {
         />
       </Row>
 
-      <Row
-        label="Intercept Cmd+V"
-        description="Plain Cmd+V silently pastes the latest history item (overrides system clipboard)"
-      >
-        <Toggle
-          checked={settings.intercept_paste}
-          onChange={(checked) => updateSettings({ intercept_paste: checked })}
-        />
-      </Row>
-
       <Row label="History limit" description="Maximum items kept in history">
         <select
           value={settings.history_limit}
