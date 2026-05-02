@@ -66,7 +66,7 @@ export function useKeyboardNav() {
         return;
       }
 
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !isInput) {
         e.preventDefault();
         await pasteSelected();
         return;
