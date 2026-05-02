@@ -232,10 +232,10 @@ pub struct UpdateInfo {
     pub available: bool,
     pub current_version: String,
     pub latest_version: Option<String>,
-    pub download_url: Option<String>,
     pub release_notes: Option<String>,
 }
 
+/// Check GitHub releases API for a newer version.
 #[tauri::command]
 pub async fn check_for_updates(
     app: tauri::AppHandle,
@@ -245,7 +245,10 @@ pub async fn check_for_updates(
 
     let mut req = auth
         .client
-        .get(format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO))
+        .get(format!(
+            "https://api.github.com/repos/{}/releases/latest",
+            GITHUB_REPO
+        ))
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "Yeet");
 
@@ -253,14 +256,16 @@ pub async fn check_for_updates(
         req = req.header("Authorization", format!("Bearer {}", token));
     }
 
-    let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
 
     if resp.status().as_u16() == 404 {
         return Ok(UpdateInfo {
             available: false,
             current_version,
             latest_version: None,
-            download_url: None,
             release_notes: None,
         });
     }
@@ -271,78 +276,90 @@ pub async fn check_for_updates(
 
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    let tag = body.get("tag_name").and_then(|v| v.as_str()).unwrap_or("0.0.0");
+    let tag = body
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0.0.0");
     let latest = tag.trim_start_matches('v');
-    let notes = body.get("body").and_then(|v| v.as_str()).map(|s| s.to_string());
-
-    let dmg_url = body.get("assets")
-        .and_then(|a| a.as_array())
-        .and_then(|assets| {
-            assets.iter().find_map(|asset| {
-                let name = asset.get("name")?.as_str()?;
-                if name.ends_with(".dmg") {
-                    asset.get("browser_download_url")?.as_str().map(|s| s.to_string())
-                } else {
-                    None
-                }
-            })
-        });
+    let notes = body
+        .get("body")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let available = version_gt(latest, &current_version);
-    log::info!("[update] current={} latest={} available={}", current_version, latest, available);
+    log::info!(
+        "[update] current={} latest={} available={}",
+        current_version,
+        latest,
+        available
+    );
 
     Ok(UpdateInfo {
         available,
         current_version,
         latest_version: Some(latest.to_string()),
-        download_url: dmg_url,
         release_notes: notes,
     })
 }
 
+/// Download, verify, and install the update in-place, then restart.
 #[tauri::command]
 pub async fn download_and_install_update(
+    app: tauri::AppHandle,
     auth: tauri::State<'_, GitHubAuthState>,
-    download_url: String,
 ) -> Result<(), String> {
-    let mut req = auth
-        .client
-        .get(&download_url)
-        .header("Accept", "application/octet-stream")
-        .header("User-Agent", "Yeet");
+    use tauri_plugin_updater::UpdaterExt;
 
+    let mut builder = app.updater_builder();
     if let Ok(Some(token)) = auth.retrieve_token() {
-        req = req.header("Authorization", format!("Bearer {}", token));
+        builder = builder
+            .header("Authorization", format!("Bearer {}", token))
+            .map_err(|e| e.to_string())?;
     }
+    let updater = builder.build().map_err(|e| e.to_string())?;
 
-    let resp = req.send().await.map_err(|e| format!("download failed: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("download failed: {}", resp.status()));
-    }
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No update available".to_string())?;
 
-    let bytes = resp.bytes().await.map_err(|e| format!("failed to read body: {}", e))?;
+    log::info!("[update] downloading v{}", update.version);
+    update
+        .download_and_install(
+            |downloaded, total| {
+                if let Some(t) = total {
+                    log::info!("[update] progress: {}/{}", downloaded, t);
+                }
+            },
+            || {
+                log::info!("[update] download complete, installing…");
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
-    let tmp = std::env::temp_dir().join("Yeet-update.dmg");
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("failed to write dmg: {}", e))?;
-
-    log::info!("[update] downloaded {} bytes to {:?}", bytes.len(), tmp);
-
-    open::that(&tmp).map_err(|e| format!("failed to open dmg: {}", e))?;
-
-    Ok(())
+    log::info!("[update] installed, restarting");
+    app.restart();
 }
 
 fn version_gt(a: &str, b: &str) -> bool {
     let parse = |s: &str| -> Vec<u64> {
-        s.split('.').filter_map(|p| p.parse().ok()).collect()
+        s.split('.')
+            .filter_map(|p| p.parse().ok())
+            .collect()
     };
     let va = parse(a);
     let vb = parse(b);
     for i in 0..va.len().max(vb.len()) {
         let pa = va.get(i).copied().unwrap_or(0);
         let pb = vb.get(i).copied().unwrap_or(0);
-        if pa > pb { return true; }
-        if pa < pb { return false; }
+        if pa > pb {
+            return true;
+        }
+        if pa < pb {
+            return false;
+        }
     }
     false
 }

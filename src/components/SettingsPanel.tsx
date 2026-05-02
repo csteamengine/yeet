@@ -308,7 +308,6 @@ interface UpdateInfo {
   available: boolean;
   current_version: string;
   latest_version: string | null;
-  download_url: string | null;
   release_notes: string | null;
 }
 
@@ -334,12 +333,12 @@ function AccountTab() {
   };
 
   const handleDownload = async () => {
-    if (!updateInfo?.download_url) return;
+    if (!updateInfo?.available) return;
     setUpdateStatus('downloading');
     try {
-      await invoke('download_and_install_update', { downloadUrl: updateInfo.download_url });
+      await invoke('download_and_install_update');
     } catch (e) {
-      console.error('[update] download failed:', e);
+      console.error('[update] install failed:', e);
     }
     setUpdateStatus('idle');
   };
@@ -479,15 +478,13 @@ function UpdateSection({
                   {updateInfo.release_notes}
                 </p>
               )}
-              {updateInfo.download_url && (
-                <button
-                  onClick={onDownload}
-                  disabled={updateStatus === 'downloading'}
-                  className="px-3 py-1.5 rounded-lg bg-accent-500 text-white text-sm hover:bg-accent-600 disabled:opacity-50"
-                >
-                  {updateStatus === 'downloading' ? 'Downloading...' : 'Download & Install'}
-                </button>
-              )}
+              <button
+                onClick={onDownload}
+                disabled={updateStatus === 'downloading'}
+                className="px-3 py-1.5 rounded-lg bg-accent-500 text-white text-sm hover:bg-accent-600 disabled:opacity-50"
+              >
+                {updateStatus === 'downloading' ? 'Installing…' : 'Update & Restart'}
+              </button>
             </>
           ) : (
             <p className="text-xs text-[var(--text-tertiary)]">You're up to date.</p>

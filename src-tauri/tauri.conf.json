@@ -48,5 +48,12 @@
       "signingIdentity": null
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/csteamengine/yeet/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ4RUJDNzkyMEM5NDdENEYKUldSUGZaUU1rc2ZyMk8xcmtrNHhxTWI5Slk1Ykt0UEdZRFhUVkd4RFhlWUxDM3YvQ2kzYWxhbFkK"
+    }
+  }
 }

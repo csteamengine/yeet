@@ -26,11 +26,8 @@ jobs:
       - name: Stamp version in config files
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          # Update tauri.conf.json
           sed -i '' "s/\"version\": \"0.0.0\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
-          # Update package.json
           sed -i '' "s/\"version\": \"0.0.0\"/\"version\": \"${VERSION}\"/" package.json
-          # Update Cargo.toml
           sed -i '' "s/^version = \"0.0.0\"/version = \"${VERSION}\"/" src-tauri/Cargo.toml
 
       - uses: pnpm/action-setup@v4
@@ -58,15 +55,53 @@ jobs:
       - name: Build Tauri app (universal binary)
         run: pnpm tauri build --target universal-apple-darwin
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Locate DMG
-        id: dmg
+      - name: Locate artifacts
+        id: artifacts
         run: |
-          DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle -name '*.dmg' | head -1)
-          NAME="Yeet_${{ steps.version.outputs.version }}_universal.dmg"
-          cp "$DMG" "$NAME"
-          echo "path=${NAME}" >> "$GITHUB_OUTPUT"
+          BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+
+          DMG=$(find "$BUNDLE_DIR" -name '*.dmg' | head -1)
+          DMG_NAME="Yeet_${{ steps.version.outputs.version }}_universal.dmg"
+          cp "$DMG" "$DMG_NAME"
+          echo "dmg=${DMG_NAME}" >> "$GITHUB_OUTPUT"
+
+          TARGZ=$(find "$BUNDLE_DIR" -name '*.tar.gz' ! -name '*.sig' | head -1)
+          TARGZ_NAME="Yeet.app.tar.gz"
+          cp "$TARGZ" "$TARGZ_NAME"
+          echo "targz=${TARGZ_NAME}" >> "$GITHUB_OUTPUT"
+
+          SIG=$(find "$BUNDLE_DIR" -name '*.tar.gz.sig' | head -1)
+          SIGNATURE=$(cat "$SIG")
+          echo "signature=${SIGNATURE}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate update manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          SIGNATURE="${{ steps.artifacts.outputs.signature }}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          URL="https://github.com/csteamengine/yeet/releases/download/${TAG}/Yeet.app.tar.gz"
+
+          cat > latest.json <<MANIFEST
+          {
+            "version": "${VERSION}",
+            "notes": "Automated release from commit ${{ github.sha }}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIGNATURE}",
+                "url": "${URL}"
+              },
+              "darwin-x86_64": {
+                "signature": "${SIGNATURE}",
+                "url": "${URL}"
+              }
+            }
+          }
+          MANIFEST
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -75,5 +110,8 @@ jobs:
           name: Yeet ${{ steps.version.outputs.version }}
           body: |
             Automated release from commit ${{ github.sha }}.
-          files: ${{ steps.dmg.outputs.path }}
+          files: |
+            ${{ steps.artifacts.outputs.dmg }}
+            ${{ steps.artifacts.outputs.targz }}
+            latest.json
           generate_release_notes: true
