@@ -172,8 +172,11 @@ pub fn run() {
                         }
 
                         // Enter/Return — paste the highlighted item immediately.
+                        let settings_open = app_handle
+                            .try_state::<SettingsOpenState>()
+                            .map_or(false, |s| s.is_open());
                         let return_now = unsafe { CGEventSourceKeyState(1, VK_RETURN) };
-                        if return_now && !prev_return {
+                        if return_now && !prev_return && !settings_open {
                             if let Some(state) = app_handle.try_state::<HotkeyModeState>() {
                                 state.exit();
                             }
