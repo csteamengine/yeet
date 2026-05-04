@@ -9,7 +9,16 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    name: build (${{ matrix.target }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,18 +51,19 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         run: pnpm install
 
-      - name: Build Tauri app (universal binary)
-        run: pnpm tauri build --target universal-apple-darwin
+      - name: Build Tauri app
+        run: pnpm tauri build --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -61,57 +71,98 @@ jobs:
       - name: Locate artifacts
         id: artifacts
         run: |
-          BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          find "$BUNDLE_DIR" -type f
 
           DMG=$(find "$BUNDLE_DIR" -name '*.dmg' | head -1)
-          DMG_NAME="Yeet_${{ steps.version.outputs.version }}_universal.dmg"
+          if [ -z "$DMG" ]; then echo "ERROR: no .dmg found"; exit 1; fi
+          DMG_NAME="Yeet_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg"
           cp "$DMG" "$DMG_NAME"
           echo "dmg=${DMG_NAME}" >> "$GITHUB_OUTPUT"
 
           TARGZ=$(find "$BUNDLE_DIR" -name '*.tar.gz' ! -name '*.sig' | head -1)
-          TARGZ_NAME="Yeet.app.tar.gz"
+          if [ -z "$TARGZ" ]; then echo "ERROR: no .tar.gz found"; exit 1; fi
+          TARGZ_NAME="Yeet_${{ matrix.arch }}.app.tar.gz"
           cp "$TARGZ" "$TARGZ_NAME"
           echo "targz=${TARGZ_NAME}" >> "$GITHUB_OUTPUT"
 
           SIG=$(find "$BUNDLE_DIR" -name '*.tar.gz.sig' | head -1)
+          if [ -z "$SIG" ]; then echo "ERROR: no .sig found"; exit 1; fi
           SIGNATURE=$(cat "$SIG")
           echo "signature=${SIGNATURE}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.arch }}
+          path: |
+            ${{ steps.artifacts.outputs.dmg }}
+            ${{ steps.artifacts.outputs.targz }}
+
+      - name: Save signature
+        run: echo "${{ steps.artifacts.outputs.signature }}" > signature-${{ matrix.arch }}.txt
+
+      - name: Upload signature
+        uses: actions/upload-artifact@v4
+        with:
+          name: sig-${{ matrix.arch }}
+          path: signature-${{ matrix.arch }}.txt
+
+  release:
+    name: create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          VERSION="0.1.${COMMIT_COUNT}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
 
       - name: Generate update manifest
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
-          SIGNATURE="${{ steps.artifacts.outputs.signature }}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          URL="https://github.com/csteamengine/yeet/releases/download/${TAG}/Yeet.app.tar.gz"
+          SIG_AARCH64=$(cat sig-aarch64/signature-aarch64.txt)
+          SIG_X64=$(cat sig-x64/signature-x64.txt)
+          BASE_URL="https://github.com/csteamengine/yeet/releases/download/${TAG}"
 
-          cat > latest.json <<MANIFEST
+          cat > latest.json <<EOF
           {
             "version": "${VERSION}",
             "notes": "Automated release from commit ${{ github.sha }}",
             "pub_date": "${PUB_DATE}",
             "platforms": {
               "darwin-aarch64": {
-                "signature": "${SIGNATURE}",
-                "url": "${URL}"
+                "signature": "${SIG_AARCH64}",
+                "url": "${BASE_URL}/Yeet_aarch64.app.tar.gz"
               },
               "darwin-x86_64": {
-                "signature": "${SIGNATURE}",
-                "url": "${URL}"
+                "signature": "${SIG_X64}",
+                "url": "${BASE_URL}/Yeet_x64.app.tar.gz"
               }
             }
           }
-          MANIFEST
+          EOF
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Yeet ${{ steps.version.outputs.version }}
-          body: |
-            Automated release from commit ${{ github.sha }}.
-          files: |
-            ${{ steps.artifacts.outputs.dmg }}
-            ${{ steps.artifacts.outputs.targz }}
-            latest.json
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "$TAG" \
+            --title "Yeet $VERSION" \
+            --notes "Automated release from commit ${{ github.sha }}" \
+            --generate-notes \
+            build-aarch64/* build-x64/* latest.json
