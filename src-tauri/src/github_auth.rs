@@ -339,7 +339,9 @@ pub async fn download_and_install_update(
         .await
         .map_err(|e| e.to_string())?;
 
-    log::info!("[update] installed, restarting");
+    log::info!("[update] installed, resetting TCC and restarting");
+    #[cfg(target_os = "macos")]
+    crate::keyboard::reset_accessibility_tcc();
     app.restart();
 }
 

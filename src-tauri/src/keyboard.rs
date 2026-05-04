@@ -39,6 +39,15 @@ fn prompt_accessibility_once() {
 }
 
 #[cfg(target_os = "macos")]
+pub fn reset_accessibility_tcc() {
+    let bundle_id = "com.yeet.app";
+    log::info!("[keyboard] resetting TCC Accessibility entry for {}", bundle_id);
+    let _ = std::process::Command::new("tccutil")
+        .args(["reset", "Accessibility", bundle_id])
+        .output();
+}
+
+#[cfg(target_os = "macos")]
 pub fn simulate_cmd_v() -> Result<(), String> {
     if !ax_is_trusted() {
         log::warn!("[keyboard] Accessibility not granted, prompting user and trying osascript");
@@ -48,7 +57,9 @@ pub fn simulate_cmd_v() -> Result<(), String> {
     if cgevent_cmd_v().is_ok() {
         return Ok(());
     }
-    log::warn!("[keyboard] CGEvent paste failed, falling back to osascript");
+    log::warn!("[keyboard] CGEvent failed despite AXIsProcessTrusted=true — likely stale TCC entry");
+    reset_accessibility_tcc();
+    prompt_accessibility_once();
     osascript_cmd_v()
 }
 
