@@ -42,7 +42,7 @@
       "icons/128x128@2x.png"
     ],
     "macOS": {
-      "entitlements": "Entitlements.plist",
+      "entitlements": null,
       "exceptionDomain": "",
       "frameworks": [],
       "providerShortName": null,
