@@ -485,15 +485,14 @@ pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) ->
         }
 
         crate::window::hide_window(app.clone()).await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
         #[cfg(target_os = "macos")]
-        app.run_on_main_thread(|| {
+        {
             if let Err(e) = keyboard::simulate_cmd_v() {
                 log::warn!("simulate_cmd_v failed: {}", e);
             }
-        })
-        .map_err(|e| e.to_string())?;
+        }
     }
 
     // Exit hotkey mode AFTER the paste completes so the modifier-release
