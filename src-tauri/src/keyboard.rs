@@ -1,3 +1,4 @@
+
 #[cfg(target_os = "macos")]
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
 #[cfg(target_os = "macos")]
@@ -50,17 +51,18 @@ pub fn reset_accessibility_tcc() {
 #[cfg(target_os = "macos")]
 pub fn simulate_cmd_v() -> Result<(), String> {
     if !ax_is_trusted() {
-        log::warn!("[keyboard] Accessibility not granted, prompting user and trying osascript");
+        eprintln!("[keyboard] Accessibility not granted, prompting user and trying osascript");
         prompt_accessibility_once();
         return osascript_cmd_v();
     }
-    if cgevent_cmd_v().is_ok() {
-        return Ok(());
+    eprintln!("[keyboard] using CGEvent for Cmd+V");
+    if let Err(e) = cgevent_cmd_v() {
+        eprintln!("[keyboard] CGEvent failed ({}), falling back to osascript", e);
+        reset_accessibility_tcc();
+        prompt_accessibility_once();
+        return osascript_cmd_v();
     }
-    log::warn!("[keyboard] CGEvent failed despite AXIsProcessTrusted=true — likely stale TCC entry");
-    reset_accessibility_tcc();
-    prompt_accessibility_once();
-    osascript_cmd_v()
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

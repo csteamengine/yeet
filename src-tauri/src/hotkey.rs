@@ -66,14 +66,19 @@ impl HotkeyManager {
                     if let Some(hotkey_state) = app.try_state::<HotkeyModeState>() {
                         hotkey_state.enter();
                     }
-                    let first_item_id = app
-                        .try_state::<Database>()
-                        .and_then(|db| db.get_items(1, 0, None).ok())
-                        .and_then(|items| items.into_iter().next())
-                        .map(|item| item.id);
-                    if let Some(id) = first_item_id {
-                        if let Some(selected_state) = app.try_state::<SelectedItemState>() {
-                            selected_state.set(id);
+                    // Only default to the first item if nothing is selected yet
+                    // (first boot). The frontend will overwrite this with its
+                    // remembered selection via the hotkey-mode-started handler.
+                    if let Some(selected_state) = app.try_state::<SelectedItemState>() {
+                        if selected_state.peek().is_none() {
+                            let first_item_id = app
+                                .try_state::<Database>()
+                                .and_then(|db| db.get_items(1, 0, None).ok())
+                                .and_then(|items| items.into_iter().next())
+                                .map(|item| item.id);
+                            if let Some(id) = first_item_id {
+                                selected_state.set(id);
+                            }
                         }
                     }
                     let _ = app.emit("hotkey-mode-started", ());

@@ -416,7 +416,8 @@ pub async fn paste_item<R: Runtime>(
     let item = db.get_item(&id).map_err(|e| e.to_string())?;
     if let Some(item) = item {
         if item.content_type == "image" {
-            write_image_to_clipboard(&app, &item.content)?;
+            let data = resolve_image_bytes(&app, &item.content)?;
+            write_image_to_clipboard(&data)?;
         } else {
             app.clipboard()
                 .write_text(&item.content)
@@ -478,21 +479,45 @@ pub async fn do_paste_and_simulate<R: Runtime>(app: AppHandle<R>, id: String) ->
     };
 
     if let Some(item) = item {
-        if item.content_type == "image" {
-            write_image_to_clipboard_and_remember(&app, &item.content)?;
+        eprintln!("[paste] type={} content={}", item.content_type, &item.content[..item.content.len().min(120)]);
+
+        let write_ok = if item.content_type == "image" {
+            match write_image_to_clipboard_and_remember(&app, &item.content) {
+                Ok(()) => { eprintln!("[paste] image clipboard write OK"); true }
+                Err(e) => { eprintln!("[paste] image clipboard write FAILED: {}", e); false }
+            }
         } else {
-            write_to_clipboard_and_remember(&app, &item.content)?;
-        }
+            match write_to_clipboard_and_remember(&app, &item.content) {
+                Ok(()) => true,
+                Err(e) => { eprintln!("[paste] text clipboard write FAILED: {}", e); false }
+            }
+        };
 
+        // Always hide the window, even if the clipboard write failed,
+        // so the panel doesn't get stuck visible with stale state.
         crate::window::hide_window(app.clone()).await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
-        #[cfg(target_os = "macos")]
-        {
-            if let Err(e) = keyboard::simulate_cmd_v() {
-                log::warn!("simulate_cmd_v failed: {}", e);
+        if write_ok {
+            eprintln!("[paste] window hidden, sleeping 150ms");
+            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+            #[cfg(target_os = "macos")]
+            {
+                eprintln!("[paste] firing simulate_cmd_v (ax_trusted={})", keyboard::ax_is_trusted());
+                if let Err(e) = keyboard::simulate_cmd_v() {
+                    eprintln!("[paste] simulate_cmd_v FAILED: {}", e);
+                } else {
+                    eprintln!("[paste] simulate_cmd_v OK");
+                }
             }
         }
+    } else {
+        eprintln!("[paste] item not found for id={}", id);
+    }
+
+    // Restore the selection so the next panel open remembers what was pasted.
+    if let Some(sel) = app.try_state::<crate::window::SelectedItemState>() {
+        sel.set(id);
     }
 
     // Exit hotkey mode AFTER the paste completes so the modifier-release
@@ -532,44 +557,61 @@ fn write_to_clipboard_and_remember<R: Runtime>(
 }
 
 #[cfg(target_os = "macos")]
-fn write_image_to_clipboard<R: Runtime>(
-    app: &AppHandle<R>,
-    path: &str,
-) -> Result<(), String> {
+fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
     use cocoa::base::{id, nil};
     use cocoa::foundation::NSString;
     use objc::{class, msg_send, sel, sel_impl};
 
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
     unsafe {
         let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
         let _: () = msg_send![pb, clearContents];
         let ns_data: id = msg_send![class!(NSData), dataWithBytes:data.as_ptr() length:data.len()];
         let png_type: id = NSString::alloc(nil).init_str("public.png");
-        let _: bool = msg_send![pb, setData:ns_data forType:png_type];
-    }
+        let ok: bool = msg_send![pb, setData:ns_data forType:png_type];
+        if !ok {
+            return Err("NSPasteboard setData:forType: returned false".into());
+        }
 
-    let _ = app; // silence unused warning
+    }
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn write_image_to_clipboard<R: Runtime>(
-    _app: &AppHandle<R>,
-    _path: &str,
-) -> Result<(), String> {
+fn write_image_to_clipboard(_data: &[u8]) -> Result<(), String> {
     Err("Image clipboard write not supported on this platform".to_string())
+}
+
+/// Resolve the image content string to actual bytes on disk.
+/// Handles both formats: direct file path and legacy `[image:{hash}]`.
+fn resolve_image_bytes<R: Runtime>(app: &AppHandle<R>, content: &str) -> Result<Vec<u8>, String> {
+    let path = std::path::Path::new(content);
+    if path.exists() && path.is_file() {
+        log::info!("[paste-image] reading image from path: {}", content);
+        return std::fs::read(path).map_err(|e| format!("read image file: {}", e));
+    }
+
+    if content.starts_with("[image:") && content.ends_with(']') {
+        let hash = &content[7..content.len() - 1];
+        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let candidate = app_data_dir.join("images").join(format!("{}.png", hash));
+        if candidate.exists() {
+            log::info!("[paste-image] resolved old-format hash to: {}", candidate.display());
+            return std::fs::read(&candidate).map_err(|e| format!("read image file: {}", e));
+        }
+    }
+
+    Err(format!("image file not found for content: {}", &content[..content.len().min(80)]))
 }
 
 fn write_image_to_clipboard_and_remember<R: Runtime>(
     app: &AppHandle<R>,
-    path: &str,
+    content: &str,
 ) -> Result<(), String> {
-    write_image_to_clipboard(app, path)?;
+    let data = resolve_image_bytes(app, content)?;
 
-    // Hash the image bytes the same way read_pasteboard does, so the monitor
-    // recognises this as "our own write" and skips re-capture.
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    write_image_to_clipboard(&data)?;
+    log::info!("[paste-image] wrote {} bytes to clipboard", data.len());
+
     let mut hasher = Sha256::new();
     hasher.update(&data);
     let img_hash = format!("{:x}", hasher.finalize());

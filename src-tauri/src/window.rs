@@ -17,27 +17,6 @@ use cocoa::base::id;
 
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
-/// Guards against re-entrant panel hide (order_out triggers windowDidResignKey)
-pub struct PanelHideGuard {
-    is_hiding: AtomicBool,
-}
-
-impl PanelHideGuard {
-    pub fn new() -> Self {
-        Self {
-            is_hiding: AtomicBool::new(false),
-        }
-    }
-
-    pub fn set_hiding(&self) {
-        self.is_hiding.store(true, Ordering::SeqCst);
-    }
-
-    pub fn clear_hiding(&self) {
-        self.is_hiding.store(false, Ordering::SeqCst);
-    }
-}
-
 /// Tracks whether we're in hotkey mode (modifiers held after Cmd+Shift+V)
 /// When active, the panel should NOT auto-hide on focus loss
 pub struct HotkeyModeState {
@@ -106,6 +85,10 @@ impl SelectedItemState {
         *self.id.lock().unwrap() = Some(id);
     }
 
+    pub fn peek(&self) -> Option<String> {
+        self.id.lock().unwrap().clone()
+    }
+
     pub fn take(&self) -> Option<String> {
         self.id.lock().unwrap().take()
     }
@@ -117,6 +100,26 @@ pub struct PreviousAppState {
     app: Mutex<Option<id>>,
 }
 
+/// Send-safe wrapper for transferring a retained NSRunningApplication pointer
+/// to the main thread for activation + release.
+#[cfg(target_os = "macos")]
+pub struct PreviousAppRestore(usize);
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for PreviousAppRestore {}
+
+#[cfg(target_os = "macos")]
+impl PreviousAppRestore {
+    pub fn activate(self) {
+        use objc::{msg_send, sel, sel_impl};
+        unsafe {
+            let prev_app: id = self.0 as id;
+            let _: () = msg_send![prev_app, activateWithOptions: 1u64];
+            let _: () = msg_send![prev_app, release];
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 impl PreviousAppState {
     pub fn new() -> Self {
@@ -125,17 +128,16 @@ impl PreviousAppState {
         }
     }
 
-    /// Capture the currently frontmost application (before we show our window)
+    /// Capture the currently frontmost application (before we show our window).
+    /// Must be called from the main thread.
     pub fn capture(&self) {
         use objc::{msg_send, sel, sel_impl, class};
         unsafe {
             let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
             let frontmost: id = msg_send![workspace, frontmostApplication];
             if !frontmost.is_null() {
-                // Retain the new reference to prevent deallocation
                 let _: id = msg_send![frontmost, retain];
                 let mut guard = self.app.lock().unwrap();
-                // Release old reference if any
                 if let Some(old) = guard.take() {
                     let _: () = msg_send![old, release];
                 }
@@ -144,17 +146,9 @@ impl PreviousAppState {
         }
     }
 
-    /// Restore focus to the previously captured application
-    pub fn restore(&self) {
-        use objc::{msg_send, sel, sel_impl};
-        let app = self.app.lock().unwrap().take();
-        if let Some(prev_app) = app {
-            unsafe {
-                let _: () = msg_send![prev_app, activateWithOptions: 1u64]; // NSApplicationActivateIgnoringOtherApps = 1
-                // Balance the retain from capture
-                let _: () = msg_send![prev_app, release];
-            }
-        }
+    /// Take the stored app reference for main-thread restoration.
+    pub fn take_for_restore(&self) -> Option<PreviousAppRestore> {
+        self.app.lock().unwrap().take().map(|p| PreviousAppRestore(p as usize))
     }
 }
 
@@ -365,16 +359,16 @@ pub async fn show_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), Str
     {
         use crate::window::WebviewWindowExt;
 
-        // Capture the previous frontmost app before we take focus
-        if let Some(prev_app_state) = app.try_state::<PreviousAppState>() {
-            prev_app_state.capture();
-        }
-
         if let Ok(panel) = app.get_webview_panel(MAIN_WINDOW_LABEL) {
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 let _ = window.center_at_cursor_monitor();
             }
+
+            let app_for_main = app.clone();
             app.run_on_main_thread(move || {
+                if let Some(prev_app_state) = app_for_main.try_state::<PreviousAppState>() {
+                    prev_app_state.capture();
+                }
                 fade_in_panel(&panel);
             })
             .map_err(|e| e.to_string())?;
@@ -401,28 +395,21 @@ pub async fn hide_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), Str
 
     #[cfg(target_os = "macos")]
     {
-        // Get the previous app state before hiding
-        let prev_app_state = app.try_state::<PreviousAppState>();
-
         if let Ok(panel) = app.get_webview_panel(MAIN_WINDOW_LABEL) {
-            // Set guard to prevent delegate from re-entering order_out
-            let hide_guard = app.try_state::<PanelHideGuard>();
-            if let Some(ref guard) = hide_guard {
-                guard.set_hiding();
-            }
+            let restore = app
+                .try_state::<PreviousAppState>()
+                .and_then(|s| s.take_for_restore());
 
-            // AppKit operations must run on the main thread
+            // Hide panel on main thread first.
             app.run_on_main_thread(move || {
                 panel.order_out(None);
             }).map_err(|e| e.to_string())?;
 
-            if let Some(ref guard) = hide_guard {
-                guard.clear_hiding();
-            }
-
-            // Restore focus to the previous app
-            if let Some(state) = prev_app_state {
-                state.restore();
+            // Restore focus to the previous app from the calling thread
+            // (matching the original behaviour — activating on the main thread
+            // can flush pending key events and deliver a stray "v" to the app).
+            if let Some(r) = restore {
+                r.activate();
             }
 
             return Ok(());
@@ -451,38 +438,27 @@ pub async fn toggle_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), S
                     hotkey_state.exit();
                 }
 
-                // Closing - get previous app state for restoration
-                let prev_app_state = app.try_state::<PreviousAppState>();
-
-                // Set guard to prevent delegate from re-entering order_out
-                let hide_guard = app.try_state::<PanelHideGuard>();
-                if let Some(ref guard) = hide_guard {
-                    guard.set_hiding();
-                }
+                let restore = app
+                    .try_state::<PreviousAppState>()
+                    .and_then(|s| s.take_for_restore());
 
                 app.run_on_main_thread(move || {
                     panel.order_out(None);
                 }).map_err(|e| e.to_string())?;
 
-                if let Some(ref guard) = hide_guard {
-                    guard.clear_hiding();
-                }
-
-                // Restore focus to previous app
-                if let Some(state) = prev_app_state {
-                    state.restore();
+                if let Some(r) = restore {
+                    r.activate();
                 }
             } else {
-                // Opening - capture the current frontmost app first
-                if let Some(prev_app_state) = app.try_state::<PreviousAppState>() {
-                    prev_app_state.capture();
-                }
-
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                     let _ = window.center_at_cursor_monitor();
                 }
 
+                let app_for_main = app.clone();
                 app.run_on_main_thread(move || {
+                    if let Some(prev_app_state) = app_for_main.try_state::<PreviousAppState>() {
+                        prev_app_state.capture();
+                    }
                     fade_in_panel(&panel);
                 })
                 .map_err(|e| e.to_string())?;

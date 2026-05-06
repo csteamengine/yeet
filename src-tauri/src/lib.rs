@@ -13,7 +13,7 @@ use hotkey::HotkeyManager;
 use settings::SettingsManager;
 
 #[cfg(target_os = "macos")]
-use window::{set_window_blur, HotkeyModeState, PanelHideGuard, PreviousAppState, WebviewWindowExt, MAIN_WINDOW_LABEL};
+use window::{set_window_blur, HotkeyModeState, PreviousAppState, WebviewWindowExt, MAIN_WINDOW_LABEL};
 
 #[cfg(not(target_os = "macos"))]
 use window::HotkeyModeState;
@@ -83,8 +83,6 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             app.manage(PreviousAppState::new());
-            #[cfg(target_os = "macos")]
-            app.manage(PanelHideGuard::new());
             app.manage(HotkeyModeState::new());
             app.manage(SelectedItemState::new());
             app.manage(SettingsOpenState::new());
@@ -130,9 +128,6 @@ pub fn run() {
                     const MASK_COMMAND: u64 = 0x100000;
                     const MASK_SHIFT: u64 = 0x20000;
                     const VK_ESCAPE: u16 = 53;
-                    const VK_RETURN: u16 = 36;
-
-                    let mut prev_return = false;
 
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(30));
@@ -142,7 +137,6 @@ pub fn run() {
                             .map_or(false, |s| s.is_active());
 
                         if !is_active {
-                            prev_return = false;
                             continue;
                         }
 
@@ -159,34 +153,8 @@ pub fn run() {
                             tauri::async_runtime::spawn(async move {
                                 let _ = window::hide_window(app).await;
                             });
-                            prev_return = false;
                             continue;
                         }
-
-                        // Enter/Return — paste the highlighted item immediately.
-                        let settings_open = app_handle
-                            .try_state::<SettingsOpenState>()
-                            .map_or(false, |s| s.is_open());
-                        let return_now = unsafe { CGEventSourceKeyState(1, VK_RETURN) };
-                        if return_now && !prev_return && !settings_open {
-                            if let Some(state) = app_handle.try_state::<HotkeyModeState>() {
-                                state.exit();
-                            }
-                            if let Some(sel) = app_handle.try_state::<SelectedItemState>() {
-                                if let Some(item_id) = sel.take() {
-                                    log::info!("[enter] pasting item: {}", item_id);
-                                    let app = app_handle.clone();
-                                    tauri::async_runtime::spawn(async move {
-                                        if let Err(e) = clipboard::do_paste_and_simulate(app, item_id).await {
-                                            log::warn!("paste on enter failed: {}", e);
-                                        }
-                                    });
-                                }
-                            }
-                            prev_return = return_now;
-                            continue;
-                        }
-                        prev_return = return_now;
 
                         let (cmd_held, shift_held) = unsafe {
                             let flags = CGEventSourceFlagsState(1);
